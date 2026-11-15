@@ -28,6 +28,22 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
    - Added [`docker-compose.yml`](file:///Users/lala/Documents/code/firstwrite/docker-compose.yml) to start PostgreSQL 16, run migrations, and serve both `api` and `web` with hot reload in one command.
    - Added GitHub Actions CI workflow ([`.github/workflows/ci.yml`](file:///Users/lala/Documents/code/firstwrite/.github/workflows/ci.yml)) running `npm run check` on every push and pull request.
 
+## What Was Built in Brief 2 (Encryption Module)
+
+1. **AES-256-GCM Encryption & Decryption ([`apps/api/src/crypto/encryption.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/crypto/encryption.ts))**:
+   - Encrypts UTF-8 strings with AES-256-GCM using a fresh 12-byte (`96-bit`) cryptographically random nonce per encryption and a 16-byte (`128-bit`) authentication tag.
+   - Produces a single string encoded as `base64(nonce || ciphertext || tag)` matching `entries.content_enc`, `weekly_summaries.summary_enc`, and `weekly_summaries.themes_enc`.
+2. **Versioned Keyring & Startup Validation**:
+   - `Keyring` and `createKeyringFromEnv` load keys from `ENCRYPTION_KEY_V1`, `ENCRYPTION_KEY_V2`, … (`ENCRYPTION_KEY_V<n>`) and/or `ENCRYPTION_KEYS_JSON`, and validate at startup in [`apps/api/src/config.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/config.ts) that every configured key is exactly 32 bytes (64 hex chars or 44 base64 chars) and that `ENCRYPTION_KEY_CURRENT_VERSION` is present in the keyring.
+   - New writes use `keyring.currentVersion`; reads select the key matching the row's stored `key_version`.
+3. **Row-Bound Additional Authenticated Data (AAD) Choice**:
+   - `encrypt` and `decrypt` accept optional `associatedData` (`string | Buffer`), with canonical helpers `buildEntryAad(userId, entryDate)` (`"entry:<userId>:<entryDate>"`) and `buildSummaryAad(userId, weekStart, field)` (`"weekly_summary:<field>:<userId>:<weekStart>"`).
+   - Binding each ciphertext to its owning row (`user_id` + local date/week) ensures that if ciphertext is ever copied between users, dates, or columns in the database, GCM authentication fails immediately on decryption.
+4. **Safe Error Hierarchy**:
+   - Dedicated error classes (`EncryptionError`, `InvalidKeyLengthError`, `UnknownKeyVersionError`, `TamperedDataError`, `WrongKeyError`) whose messages and stack traces never include plaintext or key material.
+5. **Batch Re-Encryption Utility ([`apps/api/src/crypto/reencrypt.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/crypto/reencrypt.ts))**:
+   - `reencryptAll` (runnable via `npm run db:reencrypt`) migrates `entries` and `weekly_summaries` rows from older key versions to `keyring.currentVersion` in configurable batches using optimistic version checks (`WHERE id = $1 AND key_version = $2`), making it safely resumable if interrupted.
+
 ## Getting Started (Local Development)
 
 ### Quick Start with Docker Compose

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { createKeyringFromEnv, type Keyring } from './crypto/encryption.js';
 
 const encryptionKeyValidator = z
   .string()
@@ -8,6 +9,9 @@ const encryptionKeyValidator = z
       // Accept 64-char hex (32 bytes) or base64 encoding of 32 bytes
       if (/^[0-9a-fA-F]{64}$/.test(val)) {
         return true;
+      }
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(val) || val.length % 4 !== 0) {
+        return false;
       }
       try {
         const buf = Buffer.from(val, 'base64');
@@ -79,7 +83,9 @@ export const envSchema = z.object({
     .default(50),
 });
 
-export type AppConfig = z.infer<typeof envSchema>;
+export type AppConfig = z.infer<typeof envSchema> & {
+  keyring: Keyring;
+};
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const result = envSchema.safeParse(env);
@@ -94,5 +100,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     );
   }
 
-  return result.data;
+  let keyring: Keyring;
+  try {
+    keyring = createKeyringFromEnv({
+      ...env,
+      ENCRYPTION_KEY_CURRENT_VERSION: String(result.data.ENCRYPTION_KEY_CURRENT_VERSION),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Invalid encryption keyring configuration';
+    throw new Error(
+      `Invalid or missing environment configuration:\n  - ENCRYPTION_KEYRING: ${msg}\n\nPlease check your .env file against .env.example.`,
+    );
+  }
+
+  return {
+    ...result.data,
+    keyring,
+  };
 }
