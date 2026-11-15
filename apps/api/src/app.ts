@@ -3,14 +3,13 @@ import { ZodError } from 'zod';
 import {
   entryDateParamSchema,
   healthResponseSchema,
-  loginRequestSchema,
-  registerRequestSchema,
   upsertEntryRequestSchema,
 } from '@firstwrite/shared';
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
 import type { Logger } from 'pino';
+import { createAuthRouter, InMemoryAuthRepository, type AuthServiceOptions } from './auth/index.js';
 import type { AppConfig } from './config.js';
 import { createHttpLogger, createLogger } from './logger.js';
 
@@ -31,10 +30,16 @@ export class AppError extends Error {
 export interface CreateAppOptions {
   config: AppConfig;
   logger?: Logger;
+  authOptions?: Omit<AuthServiceOptions, 'config'>;
   registerRoutes?: (app: express.Express) => void;
 }
 
-export function createApp({ config, logger = createLogger(), registerRoutes }: CreateAppOptions) {
+export function createApp({
+  config,
+  logger = createLogger(),
+  authOptions,
+  registerRoutes,
+}: CreateAppOptions) {
   const app = express();
 
   // Configure trust proxy for running behind Traefik so req.ip reflects true client IP
@@ -90,17 +95,19 @@ export function createApp({ config, logger = createLogger(), registerRoutes }: C
     registerRoutes(app);
   }
 
-  // Skeleton routes for agreed API contract (Out of scope for Brief 1; validate input schema & return 501)
-  app.post('/api/auth/register', (req: Request, _res: Response) => {
-    registerRequestSchema.parse(req.body);
-    throw new AppError(501, 'NOT_IMPLEMENTED', 'Auth endpoints are not implemented in Brief 1');
+  // Mount authentication, session, settings, and account deletion routes (Brief 3)
+  const { router: authRouter } = createAuthRouter({
+    config,
+    repo: authOptions?.repo ?? new InMemoryAuthRepository(),
+    emailProvider: authOptions?.emailProvider,
+    rateLimiter: authOptions?.rateLimiter,
+    jobScheduler: authOptions?.jobScheduler,
+    turnstileVerifier: authOptions?.turnstileVerifier,
+    now: authOptions?.now,
   });
+  app.use(authRouter);
 
-  app.post('/api/auth/login', (req: Request, _res: Response) => {
-    loginRequestSchema.parse(req.body);
-    throw new AppError(501, 'NOT_IMPLEMENTED', 'Auth endpoints are not implemented in Brief 1');
-  });
-
+  // Skeleton routes for Entries (Brief 4)
   app.put('/api/entries/:date', (req: Request, _res: Response) => {
     entryDateParamSchema.parse(req.params);
     upsertEntryRequestSchema.parse(req.body);

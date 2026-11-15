@@ -44,6 +44,25 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
 5. **Batch Re-Encryption Utility ([`apps/api/src/crypto/reencrypt.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/crypto/reencrypt.ts))**:
    - `reencryptAll` (runnable via `npm run db:reencrypt`) migrates `entries` and `weekly_summaries` rows from older key versions to `keyring.currentVersion` in configurable batches using optimistic version checks (`WHERE id = $1 AND key_version = $2`), making it safely resumable if interrupted.
 
+## What Was Built in Brief 3 (Authentication and Accounts)
+
+1. **Registration, Argon2id Hashing & Password Hardening ([`apps/api/src/auth/crypto.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/auth/crypto.ts), [`packages/shared/src/index.ts`](file:///Users/lala/Documents/code/firstwrite/packages/shared/src/index.ts))**:
+   - `POST /api/auth/register` validates email, timezone (IANA), and password (minimum 10 characters, rejecting known-breached and repeated-character passwords), hashes passwords with **Argon2id** (`@noble/hashes/argon2`), and optionally verifies Cloudflare Turnstile tokens when `TURNSTILE_ENABLED=true`.
+2. **Email Verification & Password Reset ([`apps/api/src/auth/routes.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/auth/routes.ts), [`apps/api/src/auth/email.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/auth/email.ts))**:
+   - Single-use opaque tokens are generated with 32 bytes of CSPRNG entropy and stored **SHA-256 hashed** (`token_hash`) in `email_tokens` (24-hour expiry for `verify`, 1-hour expiry for `reset`).
+   - Unverified users can log in (`requiresVerificationBanner: true`) and edit general settings (`PUT /api/settings`), but are blocked from enabling weekly AI summaries until verified.
+   - `POST /api/auth/request-reset` responds identically whether or not the email exists (preventing account enumeration), and `POST /api/auth/reset-password` consumes the single-use token, updates the Argon2id hash, and immediately revokes all existing sessions.
+   - Transactional emails are sent through the provider-agnostic `EmailProvider` interface with `ConsoleEmailProvider` for local development and contain zero journal content.
+3. **Opaque Sessions, Sliding Expiry & CSRF Protection**:
+   - Sessions use random opaque tokens stored hashed (`token_hash`) in `sessions` and sent in `HttpOnly; Secure; SameSite=Lax` cookies (`mp_session`) with 30-day sliding expiry.
+   - Includes `GET /api/auth/sessions` (list active sessions), `DELETE /api/auth/sessions/:id` (revoke one), `POST /api/auth/logout`, and `POST /api/auth/logout-all` ("log out everywhere").
+   - State-changing requests require a session-bound HMAC CSRF token in `X-CSRF-Token` (`requireCsrf`).
+4. **Rate Limiting & Exponential Lockout ([`apps/api/src/auth/rate-limit.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/auth/rate-limit.ts))**:
+   - Per-IP and per-account rate limiting on `register`, `login`, `request-reset`, and `verify-email` / `reset-password` with exponential backoff lockouts after repeated authentication failures.
+5. **Account Deletion with 14-Day Grace Period**:
+   - `DELETE /api/account` requires password re-entry, sets `users.deleted_at`, immediately revokes all sessions, and enqueues a hard-delete job (`AccountJobScheduler`) for 14 days later.
+   - Logging in during the 14-day grace period prompts the user (`403 ACCOUNT_DELETION_PENDING`) and cancels deletion when `cancelDeletion: true` is supplied.
+
 ## Getting Started (Local Development)
 
 ### Quick Start with Docker Compose

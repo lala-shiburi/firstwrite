@@ -33,9 +33,58 @@ export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 // ───────────── Auth schemas ─────────────
 
+/**
+ * Common/known-breached passwords rejected at registration and password reset.
+ */
+export const COMMON_BREACHED_PASSWORDS = new Set([
+  '1234567890',
+  '12345678901',
+  '123456789012',
+  'password123',
+  'password1234',
+  'password12345',
+  'qwertyuiop',
+  'qwerty12345',
+  'welcome1234',
+  'letmein1234',
+  'admin123456',
+  'iloveyou123',
+  'monkey12345',
+  'dragon12345',
+  'sunshine123',
+  'princess123',
+  'football123',
+  'baseball123',
+  'trustno1234',
+  'superman123',
+  'morningpages',
+  'firstwrite1',
+]);
+
+export const passwordSchema = z
+  .string()
+  .min(10, 'Password must be at least 10 characters long')
+  .max(200, 'Password must be at most 200 characters long')
+  .refine(
+    (pw) => {
+      const normalized = pw.trim().toLowerCase();
+      if (COMMON_BREACHED_PASSWORDS.has(normalized)) {
+        return false;
+      }
+      // Reject single repeated character (e.g. "aaaaaaaaaa")
+      if (/^(.)\1+$/.test(normalized)) {
+        return false;
+      }
+      return true;
+    },
+    {
+      message: 'This password is too common or has appeared in known data breaches',
+    },
+  );
+
 export const registerRequestSchema = z.object({
   email: z.string().email().max(255),
-  password: z.string().min(10).max(200),
+  password: passwordSchema,
   timezone: ianaTimezoneSchema.default('UTC'),
   turnstileToken: z.string().optional(),
 });
@@ -45,6 +94,7 @@ export type RegisterRequest = z.infer<typeof registerRequestSchema>;
 export const loginRequestSchema = z.object({
   email: z.string().email().max(255),
   password: z.string().min(1).max(200),
+  cancelDeletion: z.boolean().optional(),
 });
 
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
@@ -63,10 +113,39 @@ export type RequestResetRequest = z.infer<typeof requestResetSchema>;
 
 export const resetPasswordRequestSchema = z.object({
   token: z.string().min(1),
-  password: z.string().min(10).max(200),
+  password: passwordSchema,
 });
 
 export type ResetPasswordRequest = z.infer<typeof resetPasswordRequestSchema>;
+
+export const sessionIdParamSchema = z.object({
+  id: z.string().regex(/^\d+$/, 'Session ID must be a positive integer'),
+});
+
+export const sessionItemSchema = z.object({
+  id: z.string(),
+  userAgent: z.string().nullable(),
+  ip: z.string().nullable(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+  current: z.boolean(),
+});
+
+export type SessionItem = z.infer<typeof sessionItemSchema>;
+
+export const authUserSchema = z.object({
+  id: z.string(),
+  email: z.string().email(),
+  timezone: ianaTimezoneSchema,
+  emailVerified: z.boolean(),
+  emailVerifiedAt: z.string().nullable(),
+  aiConsentAt: z.string().nullable(),
+  deletionScheduledAt: z.string().nullable(),
+  deletionHardDeleteAt: z.string().nullable(),
+  requiresVerificationBanner: z.boolean(),
+});
+
+export type AuthUser = z.infer<typeof authUserSchema>;
 
 // ───────────── Entries schemas ─────────────
 
