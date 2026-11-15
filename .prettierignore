@@ -1,0 +1,7 @@
+node_modules/
+dist/
+build/
+coverage/
+AGENTS.md
+docs/briefs/
+schema.sql

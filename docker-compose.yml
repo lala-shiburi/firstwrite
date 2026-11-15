@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: firstwrite-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-firstwrite}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-firstwrite}']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  api:
+    image: node:22-alpine
+    container_name: firstwrite-api
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-firstwrite}
+      PORT: 3000
+      APP_BASE_URL: http://localhost:5173
+    ports:
+      - '3000:3000'
+    volumes:
+      - .:/workspace
+      - api_node_modules:/workspace/node_modules
+    command: >
+      sh -c "npm install &&
+             npm run build --workspace=@firstwrite/shared &&
+             npm run db:migrate --workspace=@firstwrite/api &&
+             npm run dev --workspace=@firstwrite/api"
+
+  web:
+    image: node:22-alpine
+    container_name: firstwrite-web
+    working_dir: /workspace
+    depends_on:
+      - api
+    env_file:
+      - .env
+    environment:
+      VITE_API_BASE_URL: http://api:3000
+    ports:
+      - '5173:5173'
+    volumes:
+      - .:/workspace
+      - web_node_modules:/workspace/node_modules
+    command: >
+      sh -c "npm install &&
+             npm run build --workspace=@firstwrite/shared &&
+             npm run dev --workspace=@firstwrite/web -- --host 0.0.0.0"
+
+volumes:
+  postgres_data:
+  api_node_modules:
+  web_node_modules:
