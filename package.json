@@ -18,7 +18,8 @@
     "check": "npm run lint && npm run typecheck && npm run test",
     "db:migrate": "npm run db:migrate --workspace=@firstwrite/api",
     "db:seed": "npm run db:seed --workspace=@firstwrite/api",
-    "db:reencrypt": "npm run db:reencrypt --workspace=@firstwrite/api"
+    "db:reencrypt": "npm run db:reencrypt --workspace=@firstwrite/api",
+    "eval:summaries": "npm run eval:summaries --workspace=@firstwrite/api"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",

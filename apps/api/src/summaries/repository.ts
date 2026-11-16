@@ -47,6 +47,7 @@ export interface SummariesRepository {
   checkUserConsentActive(userId: bigint): Promise<{
     consentedAndEnabled: boolean;
     email: string | null;
+    timezone?: string;
   }>;
 
   findSummaryByUserAndWeek(userId: bigint, weekStart: string): Promise<WeeklySummaryRecord | null>;
@@ -170,17 +171,19 @@ export class InMemorySummariesRepository implements SummariesRepository {
   public async checkUserConsentActive(userId: bigint): Promise<{
     consentedAndEnabled: boolean;
     email: string | null;
+    timezone?: string;
   }> {
     if (!this.getUsersAndSettings) {
-      return { consentedAndEnabled: false, email: null };
+      return { consentedAndEnabled: false, email: null, timezone: 'UTC' };
     }
     const found = this.getUsersAndSettings().find((u) => u.userId === userId);
     if (!found || found.deletedAt !== null) {
-      return { consentedAndEnabled: false, email: null };
+      return { consentedAndEnabled: false, email: null, timezone: 'UTC' };
     }
     return {
       consentedAndEnabled: Boolean(found.aiConsentAt !== null && found.weeklySummaryEnabled),
       email: found.email,
+      timezone: found.timezone,
     };
   }
 
@@ -381,6 +384,7 @@ export function createDrizzleSummariesRepository(db: Database): SummariesReposit
       const rows = await db
         .select({
           email: users.email,
+          timezone: users.timezone,
           deletedAt: users.deletedAt,
           aiConsentAt: users.aiConsentAt,
           weeklySummaryEnabled: userSettings.weeklySummaryEnabled,
@@ -392,11 +396,12 @@ export function createDrizzleSummariesRepository(db: Database): SummariesReposit
 
       const row = rows[0];
       if (!row || row.deletedAt !== null) {
-        return { consentedAndEnabled: false, email: null };
+        return { consentedAndEnabled: false, email: null, timezone: 'UTC' };
       }
       return {
         consentedAndEnabled: Boolean(row.aiConsentAt !== null && row.weeklySummaryEnabled),
         email: row.email,
+        timezone: row.timezone,
       };
     },
 

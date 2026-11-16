@@ -11,7 +11,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts",
-    "db:reencrypt": "tsx src/crypto/reencrypt.ts"
+    "db:reencrypt": "tsx src/crypto/reencrypt.ts",
+    "eval:summaries": "tsx src/summaries/run-eval.ts"
   },
   "dependencies": {
     "@firstwrite/shared": "*",

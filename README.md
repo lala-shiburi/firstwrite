@@ -135,6 +135,18 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
    - Implemented `GET /api/summaries`, `GET /api/summaries/:weekStart`, and `DELETE /api/summaries/:weekStart`.
    - Added the **Weekly reviews** view with a visible disclaimer (`role="note"`) that this is a reflective tool and not therapy or professional advice, expandable summary details, theme tags, and per-summary delete controls.
 
+## What Was Built in Brief 9 (Summary Prompt & Evaluation Set)
+
+1. **Hardened System & User Prompt ([`apps/api/src/summaries/llm.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/summaries/llm.ts))**:
+   - Enforces a warm, non-clinical, second-person voice (`"you"`) strictly grounded in the user's writing without diagnosing, moralising, or offering unrequested advice.
+   - Supplies entries inside `<journal_week>` and `<entry date="YYYY-MM-DD" truncated="true|false">` tags with XML closing-tag sanitization (`sanitizeEntryDelimiters`) and explicit data-only boundaries against prompt injection.
+   - Handles crisis/distress weeks (`distress_flag: true`) by dropping the cheerful recap, responding with a short compassionate non-alarmist note, and inserting the `{{SUPPORT_RESOURCES}}` placeholder filled with region-appropriate helpline resources (`applySupportResourcesPlaceholder`).
+   - Covers edge cases: very short entries, non-English entries (replying in the user's language), single-entry weeks, repetitive/blank-feeling entries, and explicit/non-crisis venting.
+2. **22-Case Synthetic Evaluation Dataset & Rubrics ([`apps/api/src/summaries/eval-dataset.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/summaries/eval-dataset.ts))**:
+   - 22 fully synthetic journal weeks covering ordinary, very happy, very boring, work stress, grief, breakup, illness, mixed emotions, non-English (Spanish & French), mostly empty/short, single-entry, repetitive, explicit/cathartic venting, 3 prompt-injection scenarios, and 4 distress/crisis scenarios, each with `mustDo` and `mustNotDo` rubrics.
+3. **Evaluation Runner & Human-Review Report ([`apps/api/src/summaries/eval-runner.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/summaries/eval-runner.ts), [`apps/api/src/summaries/run-eval.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/summaries/run-eval.ts), [`docs/evals/weekly-summary-eval-report.md`](file:///Users/lala/Documents/code/firstwrite/docs/evals/weekly-summary-eval-report.md))**:
+   - `npm run eval:summaries` runs all 22 synthetic cases, verifies JSON schema validity, `distress_flag` accuracy, crisis support note rules, and prompt-injection immunity, and writes the full Markdown evaluation report with human reviewer sign-off to [`docs/evals/weekly-summary-eval-report.md`](file:///Users/lala/Documents/code/firstwrite/docs/evals/weekly-summary-eval-report.md).
+
 ## Getting Started (Local Development)
 
 ### Quick Start with Docker Compose

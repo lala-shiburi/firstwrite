@@ -21,6 +21,7 @@ import {
   type WebPushClient,
 } from '../push/index.js';
 import {
+  applySupportResourcesPlaceholder,
   buildWeeklySummaryUserPrompt,
   computeTokenCostUsd,
   prepareWeekEntriesWithCaps,
@@ -485,11 +486,17 @@ export async function processWeeklySummaryJob(params: {
     return { status: 'failed', reason: 'invalid_llm_output' };
   }
 
-  // 7. Encrypt summary_md and themes JSON before storing in weekly_summaries (AGENTS.md Rule 1)
+  // 7. Fill in {{SUPPORT_RESOURCES}} placeholder if distress_flag is set, then encrypt summary_md and themes JSON before storing in weekly_summaries (AGENTS.md Rule 1 & Brief 9)
+  const finalSummaryMd = applySupportResourcesPlaceholder(
+    validatedOutput.summary_md,
+    Boolean(validatedOutput.distress_flag),
+    preCallConsent.timezone ?? 'UTC',
+  );
+
   const summaryAad = buildSummaryAad(userId, existingRow.weekStart, 'summary');
   const themesAad = buildSummaryAad(userId, existingRow.weekStart, 'themes');
 
-  const encryptedSummary = encrypt(validatedOutput.summary_md, config.keyring, {
+  const encryptedSummary = encrypt(finalSummaryMd, config.keyring, {
     associatedData: summaryAad,
   });
   const encryptedThemes = encrypt(JSON.stringify(validatedOutput.themes), config.keyring, {
