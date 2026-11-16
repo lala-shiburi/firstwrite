@@ -200,4 +200,57 @@ describe('Brief 6: Frontend Settings UI, Permission Explanation & Push Subscript
     const alertBox = await screen.findByRole('alert');
     expect(alertBox.textContent).toContain('Browser notification permission is currently blocked');
   });
+
+  it('provides a "Download all my entries" button in Settings with a progress/spinner state for long downloads', async () => {
+    let resolveExportResponse!: (res: Response) => void;
+    const exportPromise = new Promise<Response>((resolve) => {
+      resolveExportResponse = resolve;
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/export')) {
+        return exportPromise;
+      }
+      return new Response(
+        JSON.stringify({
+          entries: [],
+          subscriptions: [],
+          meta: { totalEntries: 0, totalWords: 0 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<App queryClient={queryClient} timezone="UTC" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+
+    const downloadBtn = await screen.findByRole('button', { name: /Download all my entries/i });
+    fireEvent.click(downloadBtn);
+
+    // While download is in progress, button shows progress state and is disabled to prevent duplicate clicks
+    expect(
+      screen.getByRole('button', { name: /Downloading entries…/i }).hasAttribute('disabled'),
+    ).toBe(true);
+    expect(screen.getByText(/Preparing your archive/i)).toBeDefined();
+
+    // Complete download
+    resolveExportResponse(
+      new Response('---\ndate: 2026-11-15\nwords: 3\n---\n\nHello morning pages\n', {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': 'attachment; filename="morning-pages-export-2026-11-15.zip"',
+        },
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Export complete \(morning-pages-export-2026-11-15\.zip\)/i),
+      ).toBeDefined();
+    });
+  });
 });

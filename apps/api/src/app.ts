@@ -12,6 +12,11 @@ import {
   InMemoryEntriesRepository,
   type EntriesRepository,
 } from './entries/index.js';
+import {
+  createExportRouter,
+  InMemoryExportRepository,
+  type ExportRepository,
+} from './export/index.js';
 import { createHttpLogger, createLogger } from './logger.js';
 import { createPushRouter, InMemoryPushRepository, type PushRepository } from './push/index.js';
 
@@ -35,6 +40,8 @@ export interface CreateAppOptions {
   authOptions?: Omit<AuthServiceOptions, 'config'>;
   entriesRepo?: EntriesRepository;
   pushRepo?: PushRepository;
+  exportRepo?: ExportRepository;
+  exportBatchSize?: number;
   registerRoutes?: (app: express.Express) => void;
 }
 
@@ -44,6 +51,8 @@ export function createApp({
   authOptions,
   entriesRepo,
   pushRepo,
+  exportRepo,
+  exportBatchSize,
   registerRoutes,
 }: CreateAppOptions) {
   const app = express();
@@ -118,9 +127,10 @@ export function createApp({
   app.use(authRouter);
 
   // Mount entries routes (Brief 4)
+  const resolvedEntriesRepo = entriesRepo ?? new InMemoryEntriesRepository();
   const entriesRouter = createEntriesRouter({
     config,
-    repo: entriesRepo ?? new InMemoryEntriesRepository(),
+    repo: resolvedEntriesRepo,
     requireAuth,
     requireCsrf,
     now: authOptions?.now,
@@ -136,6 +146,25 @@ export function createApp({
     now: authOptions?.now,
   });
   app.use(pushRouter);
+
+  // Mount account data export routes (Brief 7)
+  const resolvedExportRepo =
+    exportRepo ??
+    new InMemoryExportRepository(() =>
+      resolvedEntriesRepo instanceof InMemoryEntriesRepository
+        ? resolvedEntriesRepo.entries.values()
+        : [],
+    );
+  const exportRouter = createExportRouter({
+    config,
+    repo: resolvedExportRepo,
+    requireAuth,
+    rateLimiter: authOptions?.rateLimiter,
+    batchSize: exportBatchSize,
+    logger,
+    now: authOptions?.now,
+  });
+  app.use(exportRouter);
 
   // 404 handler for unknown routes
   app.use((_req: Request, _res: Response, next: NextFunction) => {

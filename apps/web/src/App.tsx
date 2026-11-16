@@ -154,6 +154,12 @@ export function MorningPagesShell({
   const [subscribedDevices, setSubscribedDevices] = useState<PushSubscriptionItem[]>([]);
   const [settingsSavedNotice, setSettingsSavedNotice] = useState<string | null>(null);
 
+  // Export state (Brief 7)
+  const [exportFormat, setExportFormat] = useState<'zip' | 'md'>('zip');
+  const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [exportStatusMessage, setExportStatusMessage] = useState<string | null>(null);
+  const [exportErrorMessage, setExportErrorMessage] = useState<string | null>(null);
+
   // PWA install & update prompt states
   const [deferredInstallPrompt, setDeferredInstallPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
@@ -250,10 +256,10 @@ export function MorningPagesShell({
         if (cancelled) return;
 
         if (res.ok) {
-          const detail = (await res.json()) as EntryDetail;
-          if (!isDirtyRef.current) {
+          const detail = (await res.json()) as Partial<EntryDetail>;
+          if (!isDirtyRef.current && typeof detail.content === 'string') {
             setContent(detail.content);
-            setServerUpdatedAt(detail.updatedAt);
+            setServerUpdatedAt(detail.updatedAt ?? null);
             setSaveStatus('saved');
           }
         } else if (res.status === 404) {
@@ -596,9 +602,13 @@ export function MorningPagesShell({
         if (cancelled) return;
 
         if (settingsRes.ok) {
-          const s = (await settingsRes.json()) as UserSettings;
-          setReminderEnabled(s.reminderEnabled);
-          setReminderTime(s.reminderTime.slice(0, 5));
+          const s = (await settingsRes.json()) as Partial<UserSettings>;
+          if (typeof s.reminderEnabled === 'boolean') {
+            setReminderEnabled(s.reminderEnabled);
+          }
+          if (typeof s.reminderTime === 'string' && s.reminderTime.length >= 5) {
+            setReminderTime(s.reminderTime.slice(0, 5));
+          }
         }
 
         if (subsRes.ok) {
@@ -739,6 +749,55 @@ export function MorningPagesShell({
     if (res.ok) {
       setSubscribedDevices((prev) => prev.filter((d) => d.endpoint !== endpoint));
       setSettingsSavedNotice('Device unsubscribed from push notifications.');
+    }
+  };
+
+  const handleDownloadExport = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    setExportErrorMessage(null);
+    setExportStatusMessage('Preparing your archive… Large journals may take a moment.');
+
+    try {
+      const res = await fetch(`/api/export?format=${exportFormat}`, {
+        method: 'GET',
+        credentials: 'include',
+      });
+
+      if (!res.ok) {
+        if (res.status === 429) {
+          throw new Error(
+            'Export limit reached. Please wait a little while before exporting again.',
+          );
+        }
+        throw new Error(`Export failed with status ${res.status}`);
+      }
+
+      const disposition = res.headers.get('Content-Disposition') ?? '';
+      const filenameMatch = /filename="([^"]+)"/.exec(disposition);
+      const fallbackFilename = `morning-pages-export-${todayLocal}.${exportFormat}`;
+      const filename = filenameMatch?.[1] ?? fallbackFilename;
+
+      const blob = await res.blob();
+      if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = objectUrl;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
+
+      setExportStatusMessage(`Export complete (${filename}).`);
+    } catch (err) {
+      setExportStatusMessage(null);
+      setExportErrorMessage(
+        err instanceof Error ? err.message : 'Unable to download export right now.',
+      );
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -1192,6 +1251,63 @@ export function MorningPagesShell({
                     </li>
                   ))}
                 </ul>
+              )}
+            </div>
+
+            {/* Account Data Export (Brief 7) */}
+            <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 space-y-4">
+              <div>
+                <h3 className="text-sm font-medium">Export Your Journal</h3>
+                <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">
+                  Download everything you have written as standard Markdown files compatible with
+                  Obsidian, iA Writer, and any text editor.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-xs">
+                  <label htmlFor="export-format-select" className="font-medium">
+                    Format:
+                  </label>
+                  <select
+                    id="export-format-select"
+                    aria-label="Export format"
+                    value={exportFormat}
+                    disabled={isExporting}
+                    onChange={(e) => setExportFormat(e.target.value as 'zip' | 'md')}
+                    className="rounded-lg border border-stone-300 dark:border-stone-700 bg-transparent px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-stone-500"
+                  >
+                    <option value="zip">ZIP archive (one .md file per day + weekly/)</option>
+                    <option value="md">Single combined Markdown file (.md)</option>
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={isExporting}
+                  onClick={() => void handleDownloadExport()}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 text-xs font-medium disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-stone-500"
+                >
+                  {isExporting && (
+                    <span
+                      aria-hidden="true"
+                      className="h-3.5 w-3.5 rounded-full border-2 border-current border-t-transparent animate-spin"
+                    />
+                  )}
+                  <span>{isExporting ? 'Downloading entries…' : 'Download all my entries'}</span>
+                </button>
+              </div>
+
+              {exportStatusMessage && (
+                <p role="status" className="text-xs text-emerald-700 dark:text-emerald-400">
+                  {exportStatusMessage}
+                </p>
+              )}
+
+              {exportErrorMessage && (
+                <p role="alert" className="text-xs text-amber-800 dark:text-amber-300">
+                  {exportErrorMessage}
+                </p>
               )}
             </div>
           </section>

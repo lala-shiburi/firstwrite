@@ -105,6 +105,22 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
 4. **Settings UI & Permission Explanation Flow ([`apps/web/src/App.tsx`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/App.tsx), [`apps/web/src/pushClient.ts`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/pushClient.ts))**:
    - Added the **Settings** view with a reminder toggle, local time picker, a pre-prompt explanation dialog before calling `Notification.requestPermission()`, graceful handling when permission is `'denied'`, and a list of subscribed devices with per-device **Unsubscribe** buttons.
 
+## What Was Built in Brief 7 (Markdown Export and Account Data Features)
+
+1. **Streaming ZIP & Combined Markdown Export ([`apps/api/src/export/routes.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/export/routes.ts), [`apps/api/src/export/zip.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/export/zip.ts), [`apps/api/src/export/markdown.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/export/markdown.ts))**:
+   - `GET /api/export?format=zip` streams a PKZIP 2.0 archive directly to the HTTP response (`ZipStreamWriter` with backpressure handling) without building the archive in memory.
+   - Includes a root `README.md` explaining the archive layout, one Markdown file per journal entry named by local calendar date (`<YYYY-MM-DD>.md`) beginning with YAML frontmatter (`date`, `words`) followed by the entry text, and completed weekly AI summaries under `weekly/<YYYY-Www>.md` (e.g. `weekly/2026-W46.md`).
+   - `GET /api/export?format=md` streams a single combined Markdown file ordered chronologically by local date.
+2. **On-the-Fly Batch Decryption & Bounded Memory ([`apps/api/src/export/repository.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/export/repository.ts))**:
+   - Fetches and decrypts entries and weekly summaries on the fly in cursor-paginated batches (`batchSize = 100`) so memory usage stays flat even for users with thousands of entries across years of writing.
+3. **YAML Frontmatter Escaping & Zip-Slip Protection**:
+   - Properly separates entry bodies that begin with frontmatter-like `---` lines and escapes YAML strings so unusual characters, quotes, colons, or emoji never corrupt the frontmatter or Markdown editor re-import (e.g. Obsidian).
+   - `sanitizeZipEntryPath` strips leading slashes, `..`, and backslashes to prevent zip-slip path traversal.
+4. **Owner-Only Access, Per-User Rate Limiting & Metadata-Only Audit Log**:
+   - Strictly scoped to `req.auth.user.id`, rate-limited to `5` exports per hour per user (`DEFAULT_EXPORT_RATE_POLICY`), and writes a structured audit log entry (`audit: "account_export"`, `userId`, `format`, `entryCount`, `summaryCount`) with zero journal content.
+5. **Frontend Export UI ([`apps/web/src/App.tsx`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/App.tsx))**:
+   - Added the **Export Your Journal** card in **Settings** with format selector (`zip` / `md`), a `"Download all my entries"` button, spinner/progress state (`"Downloading entries…"`) during long downloads, and completion/error feedback.
+
 ## Getting Started (Local Development)
 
 ### Quick Start with Docker Compose
