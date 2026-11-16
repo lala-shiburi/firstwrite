@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Morning Pages icon">
+  <rect width="512" height="512" rx="96" fill="#e7e5e4" />
+  <rect x="64" y="64" width="384" height="384" rx="48" fill="#faf8f5" />
+  <line x1="120" y1="168" x2="392" y2="168" stroke="#1c1917" stroke-width="16" stroke-linecap="round" />
+  <line x1="120" y1="232" x2="392" y2="232" stroke="#1c1917" stroke-width="16" stroke-linecap="round" />
+  <line x1="120" y1="296" x2="392" y2="296" stroke="#1c1917" stroke-width="16" stroke-linecap="round" />
+  <line x1="120" y1="360" x2="288" y2="360" stroke="#1c1917" stroke-width="16" stroke-linecap="round" />
+</svg>

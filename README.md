@@ -80,6 +80,17 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
    - Includes both an **Entries** list view and a monthly **Calendar** view highlighting days with entries; tapping any day opens it for viewing and editing.
    - Responsive and accessible: comfortable readable line length (`max-w-[68ch]`), keyboard navigable, proper ARIA roles/labels, `motion-reduce` support, and system dark mode (`dark:`).
 
+## What Was Built in Brief 5 (PWA and Responsive Polish)
+
+1. **Web App Manifest & Icons ([`apps/web/vite.config.ts`](file:///Users/lala/Documents/code/firstwrite/apps/web/vite.config.ts), [`apps/web/index.html`](file:///Users/lala/Documents/code/firstwrite/apps/web/index.html), [`apps/web/public/icons/`](file:///Users/lala/Documents/code/firstwrite/apps/web/public/icons))**:
+   - Configured full PWA manifest (`name`, `short_name`, `description`, `theme_color`, `background_color`, `display: standalone`, `start_url: '/'`) with `192x192`, `512x512`, `512x512` `maskable`, SVG, and `180x180` Apple touch icons.
+2. **Service Worker Precache & Cache Safety (`vite-plugin-pwa`)**:
+   - Precaches the static app shell (`js`, `css`, `html`, `svg`, `png`, `webmanifest`), uses `registerType: 'prompt'` with an in-app `"Reload to update"` banner when a new Service Worker version is ready ([`apps/web/src/main.tsx`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/main.tsx)), and enforces `NetworkOnly` + `navigateFallbackDenylist: [/^\/api\//]` on all `/api/*` requests so authenticated API responses and journal content are never stored in Service Worker HTTP caches.
+3. **Offline IndexedDB Queue & Conflict-Safe Sync ([`apps/web/src/offlineQueue.ts`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/offlineQueue.ts), [`apps/web/src/App.tsx`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/App.tsx))**:
+   - Writing while offline queues the draft locally in IndexedDB (`firstwrite-offline-db` / `pending_entries`), restores unsynced drafts if the app is reopened offline, and automatically syncs when back online using `expectedUpdatedAt` so an offline draft never overwrites a newer server version.
+4. **Cross-Platform Install Affordances**:
+   - Captures `beforeinstallprompt` on Chrome Desktop / Android Chrome to surface a custom `"Install app"` button and banner, and detects iOS Safari (non-standalone) to show `"Add to Home Screen"` instructions (required for Web Push on iOS 16.4+).
+
 ## Getting Started (Local Development)
 
 ### Quick Start with Docker Compose

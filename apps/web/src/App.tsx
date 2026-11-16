@@ -7,8 +7,14 @@ import {
 } from '@firstwrite/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createBrowserOfflineQueueStore, type OfflineEntryQueueStore } from './offlineQueue.js';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'offline' | 'conflict';
+
+export interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
 
 export interface MorningPagesAppProps {
   queryClient?: QueryClient;
@@ -24,6 +30,14 @@ export interface MorningPagesAppProps {
   retryBaseDelayMs?: number;
   /** Initial CSRF token if already bootstrapped */
   initialCsrfToken?: string;
+  /** Injectable offline queue store (defaults to IndexedDB store) */
+  offlineQueueStore?: OfflineEntryQueueStore;
+  /** Optional user-agent override for testing iOS Add-to-Home-Screen guidance */
+  userAgent?: string;
+  /** Optional standalone display-mode override for testing installed state */
+  isStandalone?: boolean;
+  /** Optional callback invoked when user clicks Reload on the Service Worker update banner */
+  onReloadForUpdate?: () => void;
 }
 
 const defaultQueryClient = new QueryClient({
@@ -35,12 +49,33 @@ const defaultQueryClient = new QueryClient({
   },
 });
 
+const defaultOfflineQueueStore = createBrowserOfflineQueueStore();
+
 function detectBrowserTimezone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   } catch {
     return 'UTC';
   }
+}
+
+export function isIosSafariNotStandalone(userAgent: string, isStandalone: boolean): boolean {
+  if (isStandalone) return false;
+  const isIosDevice = /iPad|iPhone|iPod/i.test(userAgent);
+  const isWebKit = /WebKit/i.test(userAgent);
+  const isCriOSOrFxiOS = /CriOS|FxiOS|EdgiOS/i.test(userAgent);
+  return isIosDevice && isWebKit && !isCriOSOrFxiOS;
+}
+
+function detectStandaloneMode(): boolean {
+  if (typeof window === 'undefined') return false;
+  const mediaMatch =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(display-mode: standalone)').matches;
+  const navigatorStandalone =
+    'standalone' in window.navigator &&
+    (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+  return Boolean(mediaMatch || navigatorStandalone);
 }
 
 function getMonthDaysGrid(yearMonth: string): Array<{ date: string; dayNumber: number } | null> {
@@ -77,6 +112,10 @@ export function MorningPagesShell({
   autosaveDebounceMs = 1500,
   retryBaseDelayMs = 1500,
   initialCsrfToken = 'dev-csrf-token',
+  offlineQueueStore = defaultOfflineQueueStore,
+  userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '',
+  isStandalone = detectStandaloneMode(),
+  onReloadForUpdate,
 }: Omit<MorningPagesAppProps, 'queryClient'>) {
   const todayLocal = useMemo(() => getUserLocalDate(now(), timezone), [now, timezone]);
   const [selectedDate, setSelectedDate] = useState<string>(todayLocal);
@@ -88,8 +127,21 @@ export function MorningPagesShell({
   const [conflictServerEntry, setConflictServerEntry] = useState<EntryDetail | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [isDirty, setIsDirty] = useState<boolean>(false);
+  const [isNetworkOffline, setIsNetworkOffline] = useState<boolean>(
+    typeof navigator !== 'undefined' ? !navigator.onLine : false,
+  );
   const [entriesSummaryMap, setEntriesSummaryMap] = useState<Record<string, EntrySummary>>({});
   const [csrfToken, setCsrfToken] = useState<string>(initialCsrfToken);
+
+  // PWA install & update prompt states
+  const [deferredInstallPrompt, setDeferredInstallPrompt] =
+    useState<BeforeInstallPromptEvent | null>(null);
+  const [installPromptDismissed, setInstallPromptDismissed] = useState<boolean>(false);
+  const [iosBannerDismissed, setIosBannerDismissed] = useState<boolean>(false);
+  const [swUpdateAvailable, setSwUpdateAvailable] = useState<boolean>(false);
+
+  const showIosInstallBanner =
+    !iosBannerDismissed && isIosSafariNotStandalone(userAgent, isStandalone);
 
   const latestContentRef = useRef<string>(content);
   latestContentRef.current = content;
@@ -145,12 +197,28 @@ export function MorningPagesShell({
     }
   }, []);
 
-  // Load specific date's entry when selectedDate changes
+  // Load specific date's entry when selectedDate changes (checking offline IndexedDB queue first!)
   useEffect(() => {
     let cancelled = false;
     clearTimers();
 
     async function loadEntryForDate(targetDate: string) {
+      // 1. Check if there is an unsynced offline draft queued in IndexedDB for this date
+      const queuedDraft = await offlineQueueStore.get(targetDate);
+      if (cancelled) return;
+
+      if (queuedDraft) {
+        setContent(queuedDraft.content);
+        latestContentRef.current = queuedDraft.content;
+        setServerUpdatedAt(queuedDraft.expectedUpdatedAt);
+        latestUpdatedAtRef.current = queuedDraft.expectedUpdatedAt;
+        setIsDirty(true);
+        isDirtyRef.current = true;
+        setSaveStatus('offline');
+        return;
+      }
+
+      // 2. Otherwise fetch from the API
       try {
         const res = await fetch(`/api/entries/${targetDate}`, {
           credentials: 'include',
@@ -162,7 +230,6 @@ export function MorningPagesShell({
 
         if (res.ok) {
           const detail = (await res.json()) as EntryDetail;
-          // Only populate if the user hasn't started typing unsaved text for this date
           if (!isDirtyRef.current) {
             setContent(detail.content);
             setServerUpdatedAt(detail.updatedAt);
@@ -176,7 +243,7 @@ export function MorningPagesShell({
           }
         }
       } catch {
-        // Keep current in-memory editor state if offline
+        setIsNetworkOffline(true);
       }
     }
 
@@ -186,9 +253,9 @@ export function MorningPagesShell({
     return () => {
       cancelled = true;
     };
-  }, [selectedDate, clearTimers, fetchEntriesList]);
+  }, [selectedDate, clearTimers, fetchEntriesList, offlineQueueStore]);
 
-  // Core save function with exponential backoff retry on network failure
+  // Core save function with IndexedDB offline queue persistence and exponential backoff retry
   const performSave = useCallback(
     async function saveNow(overrideExpectedUpdatedAt?: string | null): Promise<boolean> {
       if (!isDirtyRef.current && overrideExpectedUpdatedAt === undefined) {
@@ -237,9 +304,12 @@ export function MorningPagesShell({
         if (res.ok) {
           const saved = (await res.json()) as EntryDetail;
           retryCountRef.current = 0;
+          setIsNetworkOffline(false);
           setServerUpdatedAt(saved.updatedAt);
           latestUpdatedAtRef.current = saved.updatedAt;
           setConflictServerEntry(null);
+
+          await offlineQueueStore.remove(snapshotDate);
 
           setEntriesSummaryMap((prev) => ({
             ...prev,
@@ -283,9 +353,18 @@ export function MorningPagesShell({
 
         throw new Error(`Save failed with HTTP ${res.status}`);
       } catch {
-        // Network failure or 5xx: keep text safely in memory, show "Offline, will retry", and schedule backoff retry
+        // Network failure: persist entry locally in IndexedDB queue, show "Offline, will retry", and retry with backoff
         isSavingRef.current = false;
+        setIsNetworkOffline(true);
         setSaveStatus('offline');
+
+        await offlineQueueStore.put({
+          entryDate: snapshotDate,
+          content: latestContentRef.current,
+          expectedUpdatedAt: expectedUpdatedAt ?? null,
+          queuedAt: now().toISOString(),
+        });
+
         retryCountRef.current += 1;
         const backoffMs = retryBaseDelayMs * Math.pow(2, Math.min(4, retryCountRef.current - 1));
 
@@ -295,16 +374,70 @@ export function MorningPagesShell({
         return false;
       }
     },
-    [autosaveDebounceMs, csrfToken, retryBaseDelayMs],
+    [autosaveDebounceMs, csrfToken, now, offlineQueueStore, retryBaseDelayMs],
   );
 
-  // Trigger debounced autosave when user types
+  // Sync any queued entries stored in IndexedDB when connection returns, using expectedUpdatedAt
+  // so an offline draft never overwrites a newer server version.
+  const syncOfflineQueuedEntries = useCallback(async () => {
+    const queuedItems = await offlineQueueStore.listAll();
+    for (const item of queuedItems) {
+      if (item.entryDate === latestDateRef.current && isDirtyRef.current) {
+        // Active date is handled by performSave()
+        continue;
+      }
+      try {
+        const res = await fetch(`/api/entries/${item.entryDate}`, {
+          method: 'PUT',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': csrfToken,
+          },
+          body: JSON.stringify({
+            content: item.content,
+            expectedUpdatedAt: item.expectedUpdatedAt,
+          }),
+        });
+
+        if (res.ok) {
+          await offlineQueueStore.remove(item.entryDate);
+        } else if (res.status === 409) {
+          const errBody = (await res.json()) as {
+            error?: { details?: { serverEntry?: EntryDetail } };
+          };
+          const serverEntry = errBody.error?.details?.serverEntry ?? null;
+          if (serverEntry && item.entryDate === latestDateRef.current) {
+            setConflictServerEntry(serverEntry);
+            setSaveStatus('conflict');
+          }
+        }
+      } catch {
+        // Still offline; leave in IndexedDB queue
+        return;
+      }
+    }
+
+    if (isDirtyRef.current) {
+      retryCountRef.current = 0;
+      await performSave();
+    }
+  }, [csrfToken, offlineQueueStore, performSave]);
+
+  // Trigger debounced autosave when user types, and immediately queue draft in IndexedDB if offline
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const nextValue = e.target.value;
     setContent(nextValue);
     latestContentRef.current = nextValue;
     setIsDirty(true);
     isDirtyRef.current = true;
+
+    void offlineQueueStore.put({
+      entryDate: latestDateRef.current,
+      content: nextValue,
+      expectedUpdatedAt: latestUpdatedAtRef.current,
+      queuedAt: now().toISOString(),
+    });
 
     if (debounceTimerRef.current !== null) {
       clearTimeout(debounceTimerRef.current);
@@ -321,7 +454,7 @@ export function MorningPagesShell({
     }
   };
 
-  // Save on tab hide (visibilitychange), online reconnection, and warn before unload if unsaved changes exist
+  // Listen for visibilitychange, beforeunload, online/offline, beforeinstallprompt, and sw update events
   useEffect(() => {
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden' && isDirtyRef.current) {
@@ -338,28 +471,64 @@ export function MorningPagesShell({
     };
 
     const onOnline = () => {
+      setIsNetworkOffline(false);
+      void syncOfflineQueuedEntries();
+    };
+
+    const onOffline = () => {
+      setIsNetworkOffline(true);
       if (isDirtyRef.current) {
-        retryCountRef.current = 0;
-        void performSave();
+        setSaveStatus('offline');
       }
+    };
+
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setDeferredInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+
+    const onSwUpdateAvailable = () => {
+      setSwUpdateAvailable(true);
     };
 
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('beforeunload', onBeforeUnload);
     window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+    window.addEventListener('sw-update-available', onSwUpdateAvailable);
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('beforeunload', onBeforeUnload);
       window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+      window.removeEventListener('sw-update-available', onSwUpdateAvailable);
     };
-  }, [performSave]);
+  }, [performSave, syncOfflineQueuedEntries]);
 
   useEffect(() => {
     return () => {
       clearTimers();
     };
   }, [clearTimers]);
+
+  const handleInstallClick = async () => {
+    if (!deferredInstallPrompt) return;
+    await deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    setDeferredInstallPrompt(null);
+  };
+
+  const handleReloadForUpdate = () => {
+    setSwUpdateAvailable(false);
+    if (onReloadForUpdate) {
+      onReloadForUpdate();
+    } else if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
+  };
 
   // Conflict resolution: merge both versions so no user writing is ever lost
   const handleMergeConflict = () => {
@@ -405,7 +574,7 @@ export function MorningPagesShell({
       ? 'Saving…'
       : saveStatus === 'saved'
         ? 'Saved'
-        : saveStatus === 'offline'
+        : saveStatus === 'offline' || isNetworkOffline
           ? 'Offline, will retry'
           : saveStatus === 'conflict'
             ? 'Conflict detected'
@@ -431,6 +600,15 @@ export function MorningPagesShell({
         </div>
 
         <nav aria-label="Journal views" className="flex items-center gap-1">
+          {deferredInstallPrompt && !installPromptDismissed && !isStandalone && (
+            <button
+              type="button"
+              onClick={() => void handleInstallClick()}
+              className="px-3 py-1.5 mr-1 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-700 text-stone-800 dark:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-500"
+            >
+              Install app
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setActiveView('write')}
@@ -469,6 +647,73 @@ export function MorningPagesShell({
           </button>
         </nav>
       </header>
+
+      {/* Banners for Service Worker updates, iOS Add to Home Screen, and offline state */}
+      <div className="w-full max-w-3xl mx-auto px-4 pt-3 space-y-2 empty:hidden">
+        {swUpdateAvailable && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="rounded-xl border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-3 shadow-sm"
+          >
+            <span>A new version of Morning Pages is available.</span>
+            <button
+              type="button"
+              onClick={handleReloadForUpdate}
+              className="px-3 py-1 rounded-lg bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 font-medium focus:outline-none focus:ring-2 focus:ring-stone-500"
+            >
+              Reload to update
+            </button>
+          </div>
+        )}
+
+        {showIosInstallBanner && (
+          <div
+            role="region"
+            aria-label="iOS install instructions"
+            className="rounded-xl border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-4 py-2.5 text-xs flex items-center justify-between gap-3 shadow-sm"
+          >
+            <span>
+              To install Morning Pages and enable reminders on iOS: tap the Share button in Safari
+              and choose <strong>Add to Home Screen</strong>.
+            </span>
+            <button
+              type="button"
+              aria-label="Dismiss install instructions"
+              onClick={() => setIosBannerDismissed(true)}
+              className="text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 px-2 py-1"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {deferredInstallPrompt && !installPromptDismissed && !isStandalone && (
+          <div
+            role="region"
+            aria-label="Install app prompt"
+            className="rounded-xl border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-3 shadow-sm"
+          >
+            <span>Install Morning Pages for quick one-tap access and offline writing.</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleInstallClick()}
+                className="px-3 py-1 rounded-lg bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 font-medium"
+              >
+                Install
+              </button>
+              <button
+                type="button"
+                onClick={() => setInstallPromptDismissed(true)}
+                className="px-2 py-1 text-stone-500 hover:text-stone-800 dark:hover:text-stone-200"
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Main content area */}
       <main className="flex-1 w-full max-w-3xl mx-auto px-4 py-6 flex flex-col">
@@ -645,11 +890,11 @@ export function MorningPagesShell({
         >
           <span
             className={`h-2 w-2 rounded-full ${
-              saveStatus === 'saved'
+              saveStatus === 'saved' && !isNetworkOffline
                 ? 'bg-emerald-500'
                 : saveStatus === 'saving'
                   ? 'bg-sky-500'
-                  : saveStatus === 'offline' || saveStatus === 'conflict'
+                  : saveStatus === 'offline' || saveStatus === 'conflict' || isNetworkOffline
                     ? 'bg-amber-500'
                     : 'bg-stone-400'
             }`}
