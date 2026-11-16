@@ -4,10 +4,13 @@ import {
   type EntriesListResponse,
   type EntryDetail,
   type EntrySummary,
+  type PushSubscriptionItem,
+  type UserSettings,
 } from '@firstwrite/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createBrowserOfflineQueueStore, type OfflineEntryQueueStore } from './offlineQueue.js';
+import { createDefaultBrowserPushAdapter, type BrowserPushAdapter } from './pushClient.js';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'offline' | 'conflict';
 
@@ -32,6 +35,10 @@ export interface MorningPagesAppProps {
   initialCsrfToken?: string;
   /** Injectable offline queue store (defaults to IndexedDB store) */
   offlineQueueStore?: OfflineEntryQueueStore;
+  /** Injectable browser push adapter (defaults to PushManager + Notification adapter) */
+  pushAdapter?: BrowserPushAdapter;
+  /** Optional VAPID public key override */
+  vapidPublicKey?: string;
   /** Optional user-agent override for testing iOS Add-to-Home-Screen guidance */
   userAgent?: string;
   /** Optional standalone display-mode override for testing installed state */
@@ -50,6 +57,7 @@ const defaultQueryClient = new QueryClient({
 });
 
 const defaultOfflineQueueStore = createBrowserOfflineQueueStore();
+const defaultPushAdapter = createDefaultBrowserPushAdapter();
 
 function detectBrowserTimezone(): string {
   try {
@@ -113,13 +121,16 @@ export function MorningPagesShell({
   retryBaseDelayMs = 1500,
   initialCsrfToken = 'dev-csrf-token',
   offlineQueueStore = defaultOfflineQueueStore,
+  pushAdapter = defaultPushAdapter,
+  vapidPublicKey = (import.meta.env?.VITE_VAPID_PUBLIC_KEY as string | undefined) ??
+    'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U',
   userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '',
   isStandalone = detectStandaloneMode(),
   onReloadForUpdate,
 }: Omit<MorningPagesAppProps, 'queryClient'>) {
   const todayLocal = useMemo(() => getUserLocalDate(now(), timezone), [now, timezone]);
   const [selectedDate, setSelectedDate] = useState<string>(todayLocal);
-  const [activeView, setActiveView] = useState<'write' | 'list' | 'calendar'>('write');
+  const [activeView, setActiveView] = useState<'write' | 'list' | 'calendar' | 'settings'>('write');
   const [calendarMonth, setCalendarMonth] = useState<string>(todayLocal.slice(0, 7));
 
   const [content, setContent] = useState<string>('');
@@ -132,6 +143,16 @@ export function MorningPagesShell({
   );
   const [entriesSummaryMap, setEntriesSummaryMap] = useState<Record<string, EntrySummary>>({});
   const [csrfToken, setCsrfToken] = useState<string>(initialCsrfToken);
+
+  // Reminder & Push notification settings state (Brief 6)
+  const [reminderEnabled, setReminderEnabled] = useState<boolean>(false);
+  const [reminderTime, setReminderTime] = useState<string>('07:00');
+  const [showPermissionExplainer, setShowPermissionExplainer] = useState<boolean>(false);
+  const [pushPermissionState, setPushPermissionState] = useState<NotificationPermission>(() =>
+    pushAdapter.getPermissionState(),
+  );
+  const [subscribedDevices, setSubscribedDevices] = useState<PushSubscriptionItem[]>([]);
+  const [settingsSavedNotice, setSettingsSavedNotice] = useState<string | null>(null);
 
   // PWA install & update prompt states
   const [deferredInstallPrompt, setDeferredInstallPrompt] =
@@ -559,6 +580,168 @@ export function MorningPagesShell({
     setActiveView('write');
   };
 
+  // Load settings and subscribed devices when opening the Settings view
+  useEffect(() => {
+    if (activeView !== 'settings') return;
+    let cancelled = false;
+
+    async function loadSettingsAndSubscriptions() {
+      setPushPermissionState(pushAdapter.getPermissionState());
+      try {
+        const [settingsRes, subsRes] = await Promise.all([
+          fetch('/api/settings', { credentials: 'include' }),
+          fetch('/api/push/subscriptions', { credentials: 'include' }),
+        ]);
+
+        if (cancelled) return;
+
+        if (settingsRes.ok) {
+          const s = (await settingsRes.json()) as UserSettings;
+          setReminderEnabled(s.reminderEnabled);
+          setReminderTime(s.reminderTime.slice(0, 5));
+        }
+
+        if (subsRes.ok) {
+          const subData = (await subsRes.json()) as { subscriptions: PushSubscriptionItem[] };
+          setSubscribedDevices(subData.subscriptions ?? []);
+        }
+      } catch {
+        // Ignore network errors while loading settings offline
+      }
+    }
+
+    void loadSettingsAndSubscriptions();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, pushAdapter]);
+
+  const saveReminderSettingsToServer = async (
+    nextEnabled: boolean,
+    nextTime: string,
+  ): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken,
+        },
+        body: JSON.stringify({
+          reminderEnabled: nextEnabled,
+          reminderTime: nextTime,
+        }),
+      });
+      if (res.ok) {
+        setSettingsSavedNotice('Reminder settings saved.');
+        return true;
+      }
+    } catch {
+      // Ignore network errors
+    }
+    return false;
+  };
+
+  const registerDevicePushSubscription = async (): Promise<boolean> => {
+    const serialized = await pushAdapter.subscribe(vapidPublicKey);
+    const res = await fetch('/api/push/subscribe', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify(serialized),
+    });
+
+    if (res.ok) {
+      const created = (await res.json()) as { subscription: PushSubscriptionItem };
+      setSubscribedDevices((prev) => {
+        const filtered = prev.filter((d) => d.endpoint !== created.subscription.endpoint);
+        return [...filtered, created.subscription];
+      });
+      return true;
+    }
+    return false;
+  };
+
+  const handleToggleReminders = async (checked: boolean) => {
+    setSettingsSavedNotice(null);
+    if (!checked) {
+      setReminderEnabled(false);
+      setShowPermissionExplainer(false);
+      await saveReminderSettingsToServer(false, reminderTime);
+      return;
+    }
+
+    const currentPerm = pushAdapter.getPermissionState();
+    setPushPermissionState(currentPerm);
+
+    if (currentPerm === 'default') {
+      // Show pre-prompt explanation flow before calling browser Notification.requestPermission()
+      setShowPermissionExplainer(true);
+      return;
+    }
+
+    if (currentPerm === 'denied') {
+      setReminderEnabled(false);
+      return;
+    }
+
+    // Permission is already 'granted'
+    setReminderEnabled(true);
+    await registerDevicePushSubscription();
+    await saveReminderSettingsToServer(true, reminderTime);
+  };
+
+  const handleConfirmEnablePushPermission = async () => {
+    setShowPermissionExplainer(false);
+    const permission = await pushAdapter.requestPermission();
+    setPushPermissionState(permission);
+
+    if (permission !== 'granted') {
+      setReminderEnabled(false);
+      return;
+    }
+
+    setReminderEnabled(true);
+    await registerDevicePushSubscription();
+    await saveReminderSettingsToServer(true, reminderTime);
+  };
+
+  const handleReminderTimeChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const nextTime = e.target.value;
+    setReminderTime(nextTime);
+    setSettingsSavedNotice(null);
+    if (reminderEnabled) {
+      await saveReminderSettingsToServer(true, nextTime);
+    }
+  };
+
+  const handleUnsubscribeEndpoint = async (endpoint: string) => {
+    setSettingsSavedNotice(null);
+    const currentDeviceEndpoint = await pushAdapter.getExistingEndpoint();
+    if (currentDeviceEndpoint === endpoint) {
+      await pushAdapter.unsubscribe();
+    }
+
+    const res = await fetch('/api/push/subscribe', {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({ endpoint }),
+    });
+
+    if (res.ok) {
+      setSubscribedDevices((prev) => prev.filter((d) => d.endpoint !== endpoint));
+      setSettingsSavedNotice('Device unsubscribed from push notifications.');
+    }
+  };
+
   const sortedEntriesList = useMemo(
     () =>
       Object.values(entriesSummaryMap).sort((a, b) =>
@@ -644,6 +827,18 @@ export function MorningPagesShell({
             }`}
           >
             Calendar
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveView('settings')}
+            aria-pressed={activeView === 'settings'}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-stone-500 ${
+              activeView === 'settings'
+                ? 'bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900'
+                : 'text-stone-700 dark:text-stone-300 hover:bg-stone-200/60 dark:hover:bg-stone-800'
+            }`}
+          >
+            Settings
           </button>
         </nav>
       </header>
@@ -857,6 +1052,147 @@ export function MorningPagesShell({
                   </button>
                 );
               })}
+            </div>
+          </section>
+        )}
+
+        {activeView === 'settings' && (
+          <section aria-label="Reminder and notification settings" className="space-y-6">
+            <div>
+              <h2 className="text-lg font-medium">Daily Reminders &amp; Notifications</h2>
+              <p className="text-sm text-stone-600 dark:text-stone-400 mt-1">
+                Receive a gentle, private reminder at your chosen local time ({timezone}) only when
+                you haven&apos;t written yet today. Notifications never include journal text.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <label
+                    htmlFor="reminder-toggle"
+                    className="text-sm font-medium text-stone-900 dark:text-stone-100"
+                  >
+                    Enable daily writing reminder
+                  </label>
+                  <p className="text-xs text-stone-500 dark:text-stone-400">
+                    Fires once per day in your local timezone ({timezone}) if today&apos;s page is
+                    still blank.
+                  </p>
+                </div>
+                <input
+                  id="reminder-toggle"
+                  type="checkbox"
+                  role="switch"
+                  aria-checked={reminderEnabled}
+                  checked={reminderEnabled}
+                  onChange={(e) => void handleToggleReminders(e.target.checked)}
+                  className="h-5 w-5 rounded border-stone-300 text-stone-900 focus:ring-stone-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4 pt-2 border-t border-stone-100 dark:border-stone-800">
+                <label
+                  htmlFor="reminder-time-input"
+                  className="text-sm font-medium text-stone-900 dark:text-stone-100"
+                >
+                  Reminder time (local time)
+                </label>
+                <input
+                  id="reminder-time-input"
+                  type="time"
+                  aria-label="Reminder time (local time)"
+                  value={reminderTime}
+                  onChange={(e) => void handleReminderTimeChange(e)}
+                  className="rounded-lg border border-stone-300 dark:border-stone-700 bg-transparent px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-stone-500"
+                />
+              </div>
+
+              {/* Pre-prompt explanation before calling browser Notification.requestPermission() */}
+              {showPermissionExplainer && (
+                <div
+                  role="dialog"
+                  aria-label="Notification permission explanation"
+                  className="rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/80 p-4 space-y-3 text-sm"
+                >
+                  <p className="font-medium text-stone-900 dark:text-stone-100">
+                    Why Morning Pages asks for notification permission
+                  </p>
+                  <p className="text-xs text-stone-600 dark:text-stone-300">
+                    Your browser will ask to allow notifications so we can send a quiet daily nudge
+                    at {reminderTime} ({timezone}) when you haven&apos;t written yet. Because lock
+                    screens are public, notifications are always generic and never contain your
+                    journal content.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleConfirmEnablePushPermission()}
+                      className="px-3 py-1.5 rounded-lg bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 text-xs font-medium"
+                    >
+                      Continue to browser prompt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowPermissionExplainer(false)}
+                      className="px-3 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 text-xs"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Graceful handling of denied browser permission */}
+              {pushPermissionState === 'denied' && (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950/40 p-4 text-xs text-amber-900 dark:text-amber-200"
+                >
+                  Browser notification permission is currently blocked for this site. To receive
+                  daily reminders, please allow notifications for Morning Pages in your browser or
+                  device settings and try again.
+                </div>
+              )}
+
+              {settingsSavedNotice && (
+                <p role="status" className="text-xs text-emerald-700 dark:text-emerald-400">
+                  {settingsSavedNotice}
+                </p>
+              )}
+            </div>
+
+            {/* Subscribed devices list with per-device Unsubscribe support */}
+            <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 space-y-3">
+              <h3 className="text-sm font-medium">Subscribed Devices</h3>
+              {subscribedDevices.length === 0 ? (
+                <p className="text-xs text-stone-500">
+                  No devices are currently subscribed to push reminders.
+                </p>
+              ) : (
+                <ul className="divide-y divide-stone-200 dark:divide-stone-800">
+                  {subscribedDevices.map((sub) => (
+                    <li
+                      key={sub.id}
+                      className="py-2.5 flex items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="truncate">
+                        <p className="font-medium text-stone-800 dark:text-stone-200 truncate">
+                          {sub.userAgent || 'Browser device'}
+                        </p>
+                        <p className="text-stone-500 font-mono truncate">{sub.endpoint}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleUnsubscribeEndpoint(sub.endpoint)}
+                        className="px-2.5 py-1 rounded-lg border border-stone-300 dark:border-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 shrink-0"
+                      >
+                        Unsubscribe
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </section>
         )}

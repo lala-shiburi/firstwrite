@@ -8,6 +8,7 @@ export default defineConfig({
     VitePWA({
       registerType: 'prompt',
       includeAssets: [
+        'push-sw.js',
         'icons/icon.svg',
         'icons/apple-touch-icon-180.png',
         'icons/icon-192.png',
@@ -55,6 +56,8 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Import push & notificationclick handlers so clicking a reminder focuses an existing window or opens '/'
+        importScripts: ['/push-sw.js'],
         // Precache only static app shell assets (HTML, JS, CSS, icons, manifest)
         globPatterns: ['**/*.{js,css,html,svg,png,webmanifest}'],
         // SPA navigation fallback to index.html, but NEVER intercept /api/* routes

@@ -91,6 +91,20 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
 4. **Cross-Platform Install Affordances**:
    - Captures `beforeinstallprompt` on Chrome Desktop / Android Chrome to surface a custom `"Install app"` button and banner, and detects iOS Safari (non-standalone) to show `"Add to Home Screen"` instructions (required for Web Push on iOS 16.4+).
 
+## What Was Built in Brief 6 (Daily Reminders and Push Notifications)
+
+1. **VAPID Keys Setup & Push Subscription API ([`apps/api/src/push/routes.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/push/routes.ts), [`apps/api/src/push/repository.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/push/repository.ts))**:
+   - Generate a VAPID keypair with `npx web-push generate-vapid-keys` and set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, and `VITE_VAPID_PUBLIC_KEY` in `.env` (documented in [`.env.example`](file:///Users/lala/Documents/code/firstwrite/.env.example)).
+   - Implemented `POST /api/push/subscribe` (upserts device push subscriptions in `push_subscriptions`, supporting multiple devices per user), `DELETE /api/push/subscribe` (unsubscribes an endpoint), `GET /api/push/subscriptions`, and `GET /api/push/vapid-public-key`.
+2. **Minutely Scheduler & Send Worker ([`apps/api/src/push/scheduler.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/push/scheduler.ts))**:
+   - `runReminderSchedulerTick` (scheduled every minute via `pg-boss` in `registerPgBossReminderJobs`) scans reminder-enabled users in cursor-paginated batches (`batchSize = 200`, using `settings_reminder_idx`), evaluates each user's local time (`getUserLocalHourMinute`) and local date (`getUserLocalDate`) in `users.timezone` (handling DST transitions and half-hour offsets such as `Asia/Kolkata`), and enqueues one send job (`reminders-send-user`) per due user without sending inline.
+   - **Word Threshold Choice**: Any entry on the user's local date with `word_count >= 1` (`MIN_ENTRY_WORDS_TO_SUPPRESS_REMINDER = 1`) counts as having started today's page and suppresses the reminder.
+   - **Idempotency & Retries**:Singleton keys (`reminder:<userId>:<localDate>`) and the sent ledger prevent duplicate reminders even if the scheduler runs multiple times in the same minute. Send jobs (`processReminderSendJob`) deliver to all of a user's subscriptions with exponential backoff retries and automatically delete dead subscriptions when the push service returns `404` or `410`.
+3. **Privacy-Safe Notification Copy & Window Focus ([`apps/web/public/push-sw.js`](file:///Users/lala/Documents/code/firstwrite/apps/web/public/push-sw.js))**:
+   - Notification text is always generic and gently varied (`GENERIC_REMINDER_MESSAGES`)—never containing journal text or streak guilt-tripping. Clicking a notification focuses an existing app window if open (or opens `/`) on today's entry.
+4. **Settings UI & Permission Explanation Flow ([`apps/web/src/App.tsx`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/App.tsx), [`apps/web/src/pushClient.ts`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/pushClient.ts))**:
+   - Added the **Settings** view with a reminder toggle, local time picker, a pre-prompt explanation dialog before calling `Notification.requestPermission()`, graceful handling when permission is `'denied'`, and a list of subscribed devices with per-device **Unsubscribe** buttons.
+
 ## Getting Started (Local Development)
 
 ### Quick Start with Docker Compose

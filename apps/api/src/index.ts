@@ -12,12 +12,14 @@ import { loadConfig } from './config.js';
 import { createDbPool } from './db/index.js';
 import { createDrizzleEntriesRepository } from './entries/index.js';
 import { createLogger } from './logger.js';
+import { createDrizzlePushRepository } from './push/index.js';
 
 const config = loadConfig();
 const logger = createLogger();
 const { pool, db } = createDbPool(config.DATABASE_URL);
 const authRepo = createDrizzleAuthRepository(db);
 const entriesRepo = createDrizzleEntriesRepository(db);
+const pushRepo = createDrizzlePushRepository(db);
 const app = createApp({
   config,
   logger,
@@ -25,6 +27,7 @@ const app = createApp({
     repo: authRepo,
   },
   entriesRepo,
+  pushRepo,
 });
 
 const server = app.listen(config.PORT, () => {

@@ -13,6 +13,7 @@ import {
   type EntriesRepository,
 } from './entries/index.js';
 import { createHttpLogger, createLogger } from './logger.js';
+import { createPushRouter, InMemoryPushRepository, type PushRepository } from './push/index.js';
 
 export class AppError extends Error {
   public readonly statusCode: number;
@@ -33,6 +34,7 @@ export interface CreateAppOptions {
   logger?: Logger;
   authOptions?: Omit<AuthServiceOptions, 'config'>;
   entriesRepo?: EntriesRepository;
+  pushRepo?: PushRepository;
   registerRoutes?: (app: express.Express) => void;
 }
 
@@ -41,6 +43,7 @@ export function createApp({
   logger = createLogger(),
   authOptions,
   entriesRepo,
+  pushRepo,
   registerRoutes,
 }: CreateAppOptions) {
   const app = express();
@@ -123,6 +126,16 @@ export function createApp({
     now: authOptions?.now,
   });
   app.use(entriesRouter);
+
+  // Mount push notification routes (Brief 6)
+  const pushRouter = createPushRouter({
+    config,
+    repo: pushRepo ?? new InMemoryPushRepository(),
+    requireAuth,
+    requireCsrf,
+    now: authOptions?.now,
+  });
+  app.use(pushRouter);
 
   // 404 handler for unknown routes
   app.use((_req: Request, _res: Response, next: NextFunction) => {

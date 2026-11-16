@@ -55,6 +55,37 @@ export function getUserLocalDate(now: Date, timezone: string): string {
 }
 
 /**
+ * Formats a `Date` instant into `HH:MM` (24-hour, `00:00`..`23:59`) in the given IANA timezone.
+ * Handles DST transitions and half-hour / 45-minute offsets accurately.
+ */
+export function getUserLocalHourMinute(now: Date, timezone: string): string {
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+  const parts = formatter.formatToParts(now);
+  const hour = parts.find((p) => p.type === 'hour')?.value;
+  const minute = parts.find((p) => p.type === 'minute')?.value;
+  if (!hour || !minute) {
+    throw new Error(`Failed to format local time for timezone ${timezone}`);
+  }
+  const normalizedHour = hour === '24' ? '00' : hour.padStart(2, '0');
+  return `${normalizedHour}:${minute.padStart(2, '0')}`;
+}
+
+/**
+ * Normalizes a `HH:MM` or `HH:MM:SS` TIME string into `HH:MM`.
+ */
+export function normalizeHourMinute(timeStr: string): string {
+  const parts = timeStr.trim().split(':');
+  const h = (parts[0] ?? '00').padStart(2, '0');
+  const m = (parts[1] ?? '00').padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+/**
  * Adds `days` (positive or negative) to a `YYYY-MM-DD` calendar date and returns the new `YYYY-MM-DD` string.
  */
 export function addDaysToLocalDate(dateStr: string, days: number): string {
@@ -307,6 +338,24 @@ export const pushUnsubscribeRequestSchema = z.object({
 });
 
 export type PushUnsubscribeRequest = z.infer<typeof pushUnsubscribeRequestSchema>;
+
+export const pushSubscriptionItemSchema = z.object({
+  id: z.string(),
+  endpoint: z.string().url(),
+  userAgent: z.string().nullable(),
+  createdAt: z.string(),
+});
+
+export type PushSubscriptionItem = z.infer<typeof pushSubscriptionItemSchema>;
+
+export const pushNotificationPayloadSchema = z.object({
+  title: z.string(),
+  body: z.string(),
+  url: z.string(),
+  tag: z.string(),
+});
+
+export type PushNotificationPayload = z.infer<typeof pushNotificationPayloadSchema>;
 
 // ───────────── Summaries schemas ─────────────
 
