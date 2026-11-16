@@ -16,7 +16,67 @@ export const ianaTimezoneSchema = z
 
 export const localDateSchema = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be a YYYY-MM-DD local date');
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be a YYYY-MM-DD local date')
+  .refine((val) => {
+    const parts = val.split('-');
+    const year = Number(parts[0]);
+    const month = Number(parts[1]);
+    const day = Number(parts[2]);
+    if (!year || month < 1 || month > 12 || day < 1 || day > 31) {
+      return false;
+    }
+    const utcDate = new Date(Date.UTC(year, month - 1, day));
+    return (
+      utcDate.getUTCFullYear() === year &&
+      utcDate.getUTCMonth() === month - 1 &&
+      utcDate.getUTCDate() === day
+    );
+  }, 'Must be a valid calendar date');
+
+/**
+ * Formats a `Date` instant into a `YYYY-MM-DD` local calendar date in the given IANA timezone.
+ * Never uses server local time or raw UTC alone (AGENTS.md Rule 2).
+ */
+export function getUserLocalDate(now: Date, timezone: string): string {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const parts = formatter.formatToParts(now);
+  const year = parts.find((p) => p.type === 'year')?.value;
+  const month = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  if (!year || !month || !day) {
+    throw new Error(`Failed to format local date for timezone ${timezone}`);
+  }
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Adds `days` (positive or negative) to a `YYYY-MM-DD` calendar date and returns the new `YYYY-MM-DD` string.
+ */
+export function addDaysToLocalDate(dateStr: string, days: number): string {
+  const parts = dateStr.split('-');
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+  const utc = new Date(Date.UTC(year, month - 1, day + days));
+  const y = String(utc.getUTCFullYear()).padStart(4, '0');
+  const m = String(utc.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(utc.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Computes the word count of a plaintext journal entry.
+ */
+export function countWords(text: string): number {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return 0;
+  return trimmed.split(/\s+/).length;
+}
 
 export const localTimeSchema = z
   .string()
@@ -149,18 +209,30 @@ export type AuthUser = z.infer<typeof authUserSchema>;
 
 // ───────────── Entries schemas ─────────────
 
+export const MAX_ENTRY_CHARACTERS = 100_000;
+
 export const entryDateParamSchema = z.object({
   date: localDateSchema,
 });
 
-export const entriesListQuerySchema = z.object({
-  from: localDateSchema.optional(),
-  to: localDateSchema.optional(),
-});
+export const entriesListQuerySchema = z
+  .object({
+    from: localDateSchema.optional(),
+    to: localDateSchema.optional(),
+  })
+  .refine((q) => !q.from || !q.to || q.from <= q.to, {
+    message: '"from" date must be earlier than or equal to "to" date',
+    path: ['from'],
+  });
 
 export const upsertEntryRequestSchema = z.object({
-  content: z.string().max(100_000),
-  expectedUpdatedAt: z.string().datetime().optional(),
+  content: z
+    .string()
+    .max(
+      MAX_ENTRY_CHARACTERS,
+      `Entry exceeds maximum allowed size of ${MAX_ENTRY_CHARACTERS.toLocaleString()} characters`,
+    ),
+  expectedUpdatedAt: z.string().datetime().nullable().optional(),
 });
 
 export type UpsertEntryRequest = z.infer<typeof upsertEntryRequestSchema>;
@@ -179,6 +251,16 @@ export const entryDetailSchema = entrySummarySchema.extend({
 });
 
 export type EntryDetail = z.infer<typeof entryDetailSchema>;
+
+export const entriesListResponseSchema = z.object({
+  entries: z.array(entrySummarySchema),
+  meta: z.object({
+    totalEntries: z.number().int().nonnegative(),
+    totalWords: z.number().int().nonnegative(),
+  }),
+});
+
+export type EntriesListResponse = z.infer<typeof entriesListResponseSchema>;
 
 // ───────────── Settings schemas ─────────────
 

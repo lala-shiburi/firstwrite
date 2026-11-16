@@ -243,14 +243,14 @@ describe('Express API bootstrap & security rules', () => {
       },
     });
 
-    // Invalid date parameter triggers ZodError -> 400 VALIDATION_ERROR
-    const invalidDateRes = await injectRequest(app, {
-      method: 'PUT',
-      url: '/api/entries/not-a-date',
-      body: { content: 'hello' },
+    // Invalid payload triggers ZodError -> 400 VALIDATION_ERROR
+    const invalidRegisterRes = await injectRequest(app, {
+      method: 'POST',
+      url: '/api/auth/register',
+      body: { email: 'not-an-email', password: 'short' },
     });
-    expect(invalidDateRes.status).toBe(400);
-    expect((invalidDateRes.body.error as { code: string }).code).toBe('VALIDATION_ERROR');
+    expect(invalidRegisterRes.status).toBe(400);
+    expect((invalidRegisterRes.body.error as { code: string }).code).toBe('VALIDATION_ERROR');
   });
 
   it('honors trust proxy for X-Forwarded-For behind Traefik and enforces same-origin CORS', async () => {

@@ -1,6 +1,30 @@
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { healthResponseSchema, type HealthResponse } from '@firstwrite/shared';
-import React from 'react';
+import {
+  countWords,
+  getUserLocalDate,
+  type EntriesListResponse,
+  type EntryDetail,
+  type EntrySummary,
+} from '@firstwrite/shared';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+export type SaveStatus = 'idle' | 'saving' | 'saved' | 'offline' | 'conflict';
+
+export interface MorningPagesAppProps {
+  queryClient?: QueryClient;
+  /** User IANA timezone (defaults to browser timezone or UTC) */
+  timezone?: string;
+  /** Daily word goal (defaults to 750 words per schema.sql) */
+  dailyWordGoal?: number;
+  /** Optional controllable clock for deterministic testing */
+  now?: () => Date;
+  /** Debounce delay in ms after typing stops (defaults to 1500ms) */
+  autosaveDebounceMs?: number;
+  /** Base retry backoff delay in ms when a save fails (defaults to 1500ms) */
+  retryBaseDelayMs?: number;
+  /** Initial CSRF token if already bootstrapped */
+  initialCsrfToken?: string;
+}
 
 const defaultQueryClient = new QueryClient({
   defaultOptions: {
@@ -11,57 +35,636 @@ const defaultQueryClient = new QueryClient({
   },
 });
 
-async function fetchHealth(): Promise<HealthResponse> {
-  const response = await fetch('/api/health', {
-    credentials: 'include',
-  });
-  if (!response.ok) {
-    throw new Error(`Health check failed with status ${response.status}`);
+function detectBrowserTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
   }
-  const json: unknown = await response.json();
-  return healthResponseSchema.parse(json);
 }
 
-export function MorningPagesShell() {
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ['health'],
-    queryFn: fetchHealth,
-  });
+function getMonthDaysGrid(yearMonth: string): Array<{ date: string; dayNumber: number } | null> {
+  const parts = yearMonth.split('-');
+  const year = Number(parts[0]);
+  const month = Number(parts[1]); // 1..12
+  const firstDayUtc = new Date(Date.UTC(year, month - 1, 1));
+  const startWeekday = firstDayUtc.getUTCDay(); // 0 (Sun) .. 6 (Sat)
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+  const cells: Array<{ date: string; dayNumber: number } | null> = [];
+  for (let i = 0; i < startWeekday; i++) {
+    cells.push(null);
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    cells.push({ date: dateStr, dayNumber: d });
+  }
+  return cells;
+}
+
+function shiftYearMonth(yearMonth: string, deltaMonths: number): string {
+  const parts = yearMonth.split('-');
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  const d = new Date(Date.UTC(year, month - 1 + deltaMonths, 1));
+  return `${String(d.getUTCFullYear()).padStart(4, '0')}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+export function MorningPagesShell({
+  timezone = detectBrowserTimezone(),
+  dailyWordGoal = 750,
+  now = () => new Date(),
+  autosaveDebounceMs = 1500,
+  retryBaseDelayMs = 1500,
+  initialCsrfToken = 'dev-csrf-token',
+}: Omit<MorningPagesAppProps, 'queryClient'>) {
+  const todayLocal = useMemo(() => getUserLocalDate(now(), timezone), [now, timezone]);
+  const [selectedDate, setSelectedDate] = useState<string>(todayLocal);
+  const [activeView, setActiveView] = useState<'write' | 'list' | 'calendar'>('write');
+  const [calendarMonth, setCalendarMonth] = useState<string>(todayLocal.slice(0, 7));
+
+  const [content, setContent] = useState<string>('');
+  const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null);
+  const [conflictServerEntry, setConflictServerEntry] = useState<EntryDetail | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [isDirty, setIsDirty] = useState<boolean>(false);
+  const [entriesSummaryMap, setEntriesSummaryMap] = useState<Record<string, EntrySummary>>({});
+  const [csrfToken, setCsrfToken] = useState<string>(initialCsrfToken);
+
+  const latestContentRef = useRef<string>(content);
+  latestContentRef.current = content;
+
+  const latestDateRef = useRef<string>(selectedDate);
+  latestDateRef.current = selectedDate;
+
+  const latestUpdatedAtRef = useRef<string | null>(serverUpdatedAt);
+  latestUpdatedAtRef.current = serverUpdatedAt;
+
+  const isDirtyRef = useRef<boolean>(isDirty);
+  isDirtyRef.current = isDirty;
+
+  const retryCountRef = useRef<number>(0);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isSavingRef = useRef<boolean>(false);
+
+  const wordCount = useMemo(() => countWords(content), [content]);
+  const goalProgressPct = useMemo(
+    () => Math.min(100, Math.round((wordCount / Math.max(1, dailyWordGoal)) * 100)),
+    [wordCount, dailyWordGoal],
+  );
+
+  const clearTimers = useCallback(() => {
+    if (debounceTimerRef.current !== null) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    if (retryTimerRef.current !== null) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
+
+  // Load entry list metadata
+  const fetchEntriesList = useCallback(async () => {
+    try {
+      const res = await fetch('/api/entries', { credentials: 'include' });
+      const csrfHeader = res.headers.get('X-CSRF-Token');
+      if (csrfHeader) setCsrfToken(csrfHeader);
+
+      if (res.ok) {
+        const data = (await res.json()) as EntriesListResponse;
+        const nextMap: Record<string, EntrySummary> = {};
+        for (const item of data.entries) {
+          nextMap[item.entryDate] = item;
+        }
+        setEntriesSummaryMap(nextMap);
+      }
+    } catch {
+      // Ignore background list fetch errors when offline
+    }
+  }, []);
+
+  // Load specific date's entry when selectedDate changes
+  useEffect(() => {
+    let cancelled = false;
+    clearTimers();
+
+    async function loadEntryForDate(targetDate: string) {
+      try {
+        const res = await fetch(`/api/entries/${targetDate}`, {
+          credentials: 'include',
+        });
+        const csrfHeader = res.headers.get('X-CSRF-Token');
+        if (csrfHeader) setCsrfToken(csrfHeader);
+
+        if (cancelled) return;
+
+        if (res.ok) {
+          const detail = (await res.json()) as EntryDetail;
+          // Only populate if the user hasn't started typing unsaved text for this date
+          if (!isDirtyRef.current) {
+            setContent(detail.content);
+            setServerUpdatedAt(detail.updatedAt);
+            setSaveStatus('saved');
+          }
+        } else if (res.status === 404) {
+          if (!isDirtyRef.current) {
+            setContent('');
+            setServerUpdatedAt(null);
+            setSaveStatus('idle');
+          }
+        }
+      } catch {
+        // Keep current in-memory editor state if offline
+      }
+    }
+
+    void loadEntryForDate(selectedDate);
+    void fetchEntriesList();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDate, clearTimers, fetchEntriesList]);
+
+  // Core save function with exponential backoff retry on network failure
+  const performSave = useCallback(
+    async function saveNow(overrideExpectedUpdatedAt?: string | null): Promise<boolean> {
+      if (!isDirtyRef.current && overrideExpectedUpdatedAt === undefined) {
+        return true;
+      }
+      if (isSavingRef.current) {
+        return false;
+      }
+
+      if (debounceTimerRef.current !== null) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      if (retryTimerRef.current !== null) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+
+      const snapshotText = latestContentRef.current;
+      const snapshotDate = latestDateRef.current;
+      const expectedUpdatedAt =
+        overrideExpectedUpdatedAt !== undefined
+          ? overrideExpectedUpdatedAt
+          : latestUpdatedAtRef.current;
+
+      isSavingRef.current = true;
+      setSaveStatus('saving');
+
+      try {
+        const res = await fetch(`/api/entries/${snapshotDate}`, {
+          method: 'PUT',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': csrfToken,
+          },
+          body: JSON.stringify({
+            content: snapshotText,
+            ...(expectedUpdatedAt !== undefined ? { expectedUpdatedAt } : {}),
+          }),
+        });
+
+        const csrfHeader = res.headers.get('X-CSRF-Token');
+        if (csrfHeader) setCsrfToken(csrfHeader);
+
+        if (res.ok) {
+          const saved = (await res.json()) as EntryDetail;
+          retryCountRef.current = 0;
+          setServerUpdatedAt(saved.updatedAt);
+          latestUpdatedAtRef.current = saved.updatedAt;
+          setConflictServerEntry(null);
+
+          setEntriesSummaryMap((prev) => ({
+            ...prev,
+            [saved.entryDate]: {
+              entryDate: saved.entryDate,
+              wordCount: saved.wordCount,
+              createdAt: saved.createdAt,
+              updatedAt: saved.updatedAt,
+            },
+          }));
+
+          // If the user didn't type additional characters while the request was in flight, clear dirty flag
+          if (latestContentRef.current === snapshotText) {
+            setIsDirty(false);
+            isDirtyRef.current = false;
+            setSaveStatus('saved');
+          } else {
+            isSavingRef.current = false;
+            debounceTimerRef.current = setTimeout(() => {
+              void saveNow();
+            }, autosaveDebounceMs);
+            return true;
+          }
+
+          isSavingRef.current = false;
+          return true;
+        }
+
+        if (res.status === 409) {
+          const errBody = (await res.json()) as {
+            error?: { details?: { serverEntry?: EntryDetail } };
+          };
+          const serverEntry = errBody.error?.details?.serverEntry ?? null;
+          if (serverEntry) {
+            setConflictServerEntry(serverEntry);
+          }
+          setSaveStatus('conflict');
+          isSavingRef.current = false;
+          return false;
+        }
+
+        throw new Error(`Save failed with HTTP ${res.status}`);
+      } catch {
+        // Network failure or 5xx: keep text safely in memory, show "Offline, will retry", and schedule backoff retry
+        isSavingRef.current = false;
+        setSaveStatus('offline');
+        retryCountRef.current += 1;
+        const backoffMs = retryBaseDelayMs * Math.pow(2, Math.min(4, retryCountRef.current - 1));
+
+        retryTimerRef.current = setTimeout(() => {
+          void saveNow();
+        }, backoffMs);
+        return false;
+      }
+    },
+    [autosaveDebounceMs, csrfToken, retryBaseDelayMs],
+  );
+
+  // Trigger debounced autosave when user types
+  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const nextValue = e.target.value;
+    setContent(nextValue);
+    latestContentRef.current = nextValue;
+    setIsDirty(true);
+    isDirtyRef.current = true;
+
+    if (debounceTimerRef.current !== null) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      void performSave();
+    }, autosaveDebounceMs);
+  };
+
+  // Save on blur
+  const handleEditorBlur = () => {
+    if (isDirtyRef.current) {
+      void performSave();
+    }
+  };
+
+  // Save on tab hide (visibilitychange), online reconnection, and warn before unload if unsaved changes exist
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && isDirtyRef.current) {
+        void performSave();
+      }
+    };
+
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (isDirtyRef.current) {
+        void performSave();
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+
+    const onOnline = () => {
+      if (isDirtyRef.current) {
+        retryCountRef.current = 0;
+        void performSave();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    window.addEventListener('online', onOnline);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [performSave]);
+
+  useEffect(() => {
+    return () => {
+      clearTimers();
+    };
+  }, [clearTimers]);
+
+  // Conflict resolution: merge both versions so no user writing is ever lost
+  const handleMergeConflict = () => {
+    if (!conflictServerEntry) return;
+    const merged =
+      conflictServerEntry.content.trim() === content.trim()
+        ? content
+        : `${conflictServerEntry.content}\n\n---\n\n${content}`;
+    setContent(merged);
+    latestContentRef.current = merged;
+    setServerUpdatedAt(conflictServerEntry.updatedAt);
+    latestUpdatedAtRef.current = conflictServerEntry.updatedAt;
+    setConflictServerEntry(null);
+    setIsDirty(true);
+    isDirtyRef.current = true;
+    void performSave(conflictServerEntry.updatedAt);
+  };
+
+  const handleSelectDate = (targetDate: string) => {
+    if (targetDate !== selectedDate) {
+      if (isDirtyRef.current) {
+        void performSave();
+      }
+      setIsDirty(false);
+      isDirtyRef.current = false;
+      setSelectedDate(targetDate);
+    }
+    setActiveView('write');
+  };
+
+  const sortedEntriesList = useMemo(
+    () =>
+      Object.values(entriesSummaryMap).sort((a, b) =>
+        a.entryDate > b.entryDate ? -1 : a.entryDate < b.entryDate ? 1 : 0,
+      ),
+    [entriesSummaryMap],
+  );
+
+  const monthCells = useMemo(() => getMonthDaysGrid(calendarMonth), [calendarMonth]);
+
+  const statusLabel =
+    saveStatus === 'saving'
+      ? 'Saving…'
+      : saveStatus === 'saved'
+        ? 'Saved'
+        : saveStatus === 'offline'
+          ? 'Offline, will retry'
+          : saveStatus === 'conflict'
+            ? 'Conflict detected'
+            : isDirty
+              ? 'Unsaved changes'
+              : 'Ready';
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center px-4 py-12">
-      <div className="max-w-xl w-full space-y-4 text-center">
-        <h1 className="text-3xl font-serif tracking-tight text-stone-900">Morning Pages</h1>
-        <p className="text-stone-600 text-base">
-          Write one free-form entry per day. Private, encrypted, distraction-free.
-        </p>
+    <div className="min-h-screen bg-[#faf8f5] dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors motion-reduce:transition-none flex flex-col">
+      {/* Top navigation bar — reachable and usable one-handed on mobile */}
+      <header className="w-full max-w-3xl mx-auto px-4 pt-4 pb-2 flex flex-wrap items-center justify-between gap-3 border-b border-stone-200/80 dark:border-stone-800">
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-serif tracking-tight text-stone-900 dark:text-stone-100">
+            Morning Pages
+          </h1>
+          <span
+            className="text-xs font-mono px-2.5 py-1 rounded-full bg-stone-200/70 dark:bg-stone-800 text-stone-700 dark:text-stone-300"
+            aria-label="Active entry date"
+          >
+            {selectedDate}
+            {selectedDate === todayLocal ? ' (Today)' : ''}
+          </span>
+        </div>
+
+        <nav aria-label="Journal views" className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setActiveView('write')}
+            aria-pressed={activeView === 'write'}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-stone-500 ${
+              activeView === 'write'
+                ? 'bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900'
+                : 'text-stone-700 dark:text-stone-300 hover:bg-stone-200/60 dark:hover:bg-stone-800'
+            }`}
+          >
+            Write
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveView('list')}
+            aria-pressed={activeView === 'list'}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-stone-500 ${
+              activeView === 'list'
+                ? 'bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900'
+                : 'text-stone-700 dark:text-stone-300 hover:bg-stone-200/60 dark:hover:bg-stone-800'
+            }`}
+          >
+            Entries
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveView('calendar')}
+            aria-pressed={activeView === 'calendar'}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-stone-500 ${
+              activeView === 'calendar'
+                ? 'bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900'
+                : 'text-stone-700 dark:text-stone-300 hover:bg-stone-200/60 dark:hover:bg-stone-800'
+            }`}
+          >
+            Calendar
+          </button>
+        </nav>
+      </header>
+
+      {/* Main content area */}
+      <main className="flex-1 w-full max-w-3xl mx-auto px-4 py-6 flex flex-col">
+        {conflictServerEntry && (
+          <div
+            role="alert"
+            className="mb-4 rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950/50 p-4 text-sm text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-3"
+          >
+            <span>
+              Another device saved a newer version of this entry. Merge both versions so no writing
+              is lost.
+            </span>
+            <button
+              type="button"
+              onClick={handleMergeConflict}
+              className="px-3 py-1.5 rounded-lg bg-amber-800 text-white font-medium hover:bg-amber-900 focus:outline-none focus:ring-2 focus:ring-amber-600"
+            >
+              Merge & Save Both
+            </button>
+          </div>
+        )}
+
+        {activeView === 'write' && (
+          <section aria-label="Journal editor" className="flex-1 flex flex-col">
+            <label htmlFor="morning-pages-editor" className="sr-only">
+              Journal entry for {selectedDate}
+            </label>
+            <textarea
+              id="morning-pages-editor"
+              aria-label={`Journal entry for ${selectedDate}`}
+              value={content}
+              onChange={handleContentChange}
+              onBlur={handleEditorBlur}
+              placeholder="Write freely without stopping or editing…"
+              className="flex-1 w-full min-h-[55vh] max-w-[68ch] mx-auto bg-transparent resize-none border-0 focus:outline-none focus:ring-0 text-lg leading-relaxed font-serif placeholder:text-stone-400 dark:placeholder:text-stone-600"
+            />
+          </section>
+        )}
+
+        {activeView === 'list' && (
+          <section aria-label="Past entries list" className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium">All Entries</h2>
+              {selectedDate !== todayLocal && (
+                <button
+                  type="button"
+                  onClick={() => handleSelectDate(todayLocal)}
+                  className="text-sm underline text-stone-700 dark:text-stone-300"
+                >
+                  Jump to Today ({todayLocal})
+                </button>
+              )}
+            </div>
+
+            {sortedEntriesList.length === 0 ? (
+              <p className="text-sm text-stone-500 py-8 text-center">
+                No entries recorded yet. Start writing today&apos;s page.
+              </p>
+            ) : (
+              <ul className="divide-y divide-stone-200 dark:divide-stone-800 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
+                {sortedEntriesList.map((item) => (
+                  <li key={item.entryDate}>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectDate(item.entryDate)}
+                      className="w-full px-4 py-3 text-left flex items-center justify-between hover:bg-stone-100 dark:hover:bg-stone-800/60 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-stone-500"
+                    >
+                      <span className="font-mono text-sm font-medium">{item.entryDate}</span>
+                      <span className="text-xs text-stone-600 dark:text-stone-400">
+                        {item.wordCount} {item.wordCount === 1 ? 'word' : 'words'}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {activeView === 'calendar' && (
+          <section aria-label="Entries calendar" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setCalendarMonth((m) => shiftYearMonth(m, -1))}
+                aria-label="Previous month"
+                className="px-3 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 text-sm"
+              >
+                Previous
+              </button>
+              <h2 className="text-base font-medium font-mono">{calendarMonth}</h2>
+              <button
+                type="button"
+                onClick={() => setCalendarMonth((m) => shiftYearMonth(m, 1))}
+                aria-label="Next month"
+                className="px-3 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 text-sm"
+              >
+                Next
+              </button>
+            </div>
+
+            <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-stone-500">
+              <span>Sun</span>
+              <span>Mon</span>
+              <span>Tue</span>
+              <span>Wed</span>
+              <span>Thu</span>
+              <span>Fri</span>
+              <span>Sat</span>
+            </div>
+
+            <div className="grid grid-cols-7 gap-1">
+              {monthCells.map((cell, idx) => {
+                if (!cell) {
+                  return <div key={`empty-${idx}`} className="h-11" />;
+                }
+                const summary = entriesSummaryMap[cell.date];
+                const hasEntry = Boolean(summary && summary.wordCount > 0);
+                const isSelected = cell.date === selectedDate;
+                return (
+                  <button
+                    key={cell.date}
+                    type="button"
+                    onClick={() => handleSelectDate(cell.date)}
+                    aria-label={`Open entry for ${cell.date}${hasEntry ? `, ${summary!.wordCount} words` : ''}`}
+                    className={`h-11 rounded-lg flex flex-col items-center justify-center text-sm border focus:outline-none focus:ring-2 focus:ring-stone-500 ${
+                      isSelected
+                        ? 'border-stone-900 dark:border-stone-100 font-semibold bg-stone-200/70 dark:bg-stone-800'
+                        : hasEntry
+                          ? 'border-emerald-600/40 bg-emerald-50/70 dark:bg-emerald-950/40 text-stone-900 dark:text-stone-100'
+                          : 'border-transparent hover:bg-stone-200/50 dark:hover:bg-stone-800/50'
+                    }`}
+                  >
+                    <span>{cell.dayNumber}</span>
+                    {hasEntry && (
+                      <span
+                        className="h-1.5 w-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400 mt-0.5"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+      </main>
+
+      {/* Unobtrusive bottom status & daily word goal progress bar */}
+      <footer className="w-full max-w-3xl mx-auto px-4 py-3 border-t border-stone-200/80 dark:border-stone-800 flex flex-wrap items-center justify-between gap-4 text-xs text-stone-600 dark:text-stone-400">
+        <div className="flex items-center gap-3 flex-1 min-w-[200px]">
+          <span aria-live="polite" className="font-mono">
+            {wordCount} / {dailyWordGoal} words
+          </span>
+          <div
+            role="progressbar"
+            aria-label="Daily word goal progress"
+            aria-valuenow={wordCount}
+            aria-valuemin={0}
+            aria-valuemax={dailyWordGoal}
+            className="w-32 h-2 rounded-full bg-stone-200 dark:bg-stone-800 overflow-hidden"
+          >
+            <div
+              className="h-full bg-emerald-600 dark:bg-emerald-500 transition-all motion-reduce:transition-none"
+              style={{ width: `${goalProgressPct}%` }}
+            />
+          </div>
+        </div>
+
         <div
-          className="inline-flex items-center gap-2 rounded-full border border-stone-200 bg-white px-4 py-1.5 text-xs text-stone-600 shadow-sm"
           role="status"
           aria-live="polite"
+          className="inline-flex items-center gap-2 rounded-full border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-3 py-1 shadow-sm"
         >
           <span
             className={`h-2 w-2 rounded-full ${
-              data?.status === 'ok' ? 'bg-emerald-500' : isError ? 'bg-amber-500' : 'bg-stone-300'
+              saveStatus === 'saved'
+                ? 'bg-emerald-500'
+                : saveStatus === 'saving'
+                  ? 'bg-sky-500'
+                  : saveStatus === 'offline' || saveStatus === 'conflict'
+                    ? 'bg-amber-500'
+                    : 'bg-stone-400'
             }`}
           />
-          <span>
-            {isLoading
-              ? 'Checking API status…'
-              : data?.status === 'ok'
-                ? 'API connected'
-                : 'API offline'}
-          </span>
+          <span>{statusLabel}</span>
         </div>
-      </div>
-    </main>
+      </footer>
+    </div>
   );
 }
 
-export function App({ queryClient = defaultQueryClient }: { queryClient?: QueryClient }) {
+export function App({ queryClient = defaultQueryClient, ...rest }: MorningPagesAppProps) {
   return (
     <QueryClientProvider client={queryClient}>
-      <MorningPagesShell />
+      <MorningPagesShell {...rest} />
     </QueryClientProvider>
   );
 }

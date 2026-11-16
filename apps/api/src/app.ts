@@ -1,16 +1,17 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
-import {
-  entryDateParamSchema,
-  healthResponseSchema,
-  upsertEntryRequestSchema,
-} from '@firstwrite/shared';
+import { healthResponseSchema } from '@firstwrite/shared';
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
 import type { Logger } from 'pino';
 import { createAuthRouter, InMemoryAuthRepository, type AuthServiceOptions } from './auth/index.js';
 import type { AppConfig } from './config.js';
+import {
+  createEntriesRouter,
+  InMemoryEntriesRepository,
+  type EntriesRepository,
+} from './entries/index.js';
 import { createHttpLogger, createLogger } from './logger.js';
 
 export class AppError extends Error {
@@ -31,6 +32,7 @@ export interface CreateAppOptions {
   config: AppConfig;
   logger?: Logger;
   authOptions?: Omit<AuthServiceOptions, 'config'>;
+  entriesRepo?: EntriesRepository;
   registerRoutes?: (app: express.Express) => void;
 }
 
@@ -38,6 +40,7 @@ export function createApp({
   config,
   logger = createLogger(),
   authOptions,
+  entriesRepo,
   registerRoutes,
 }: CreateAppOptions) {
   const app = express();
@@ -96,7 +99,11 @@ export function createApp({
   }
 
   // Mount authentication, session, settings, and account deletion routes (Brief 3)
-  const { router: authRouter } = createAuthRouter({
+  const {
+    router: authRouter,
+    requireAuth,
+    requireCsrf,
+  } = createAuthRouter({
     config,
     repo: authOptions?.repo ?? new InMemoryAuthRepository(),
     emailProvider: authOptions?.emailProvider,
@@ -107,12 +114,15 @@ export function createApp({
   });
   app.use(authRouter);
 
-  // Skeleton routes for Entries (Brief 4)
-  app.put('/api/entries/:date', (req: Request, _res: Response) => {
-    entryDateParamSchema.parse(req.params);
-    upsertEntryRequestSchema.parse(req.body);
-    throw new AppError(501, 'NOT_IMPLEMENTED', 'Entries endpoints are not implemented in Brief 1');
+  // Mount entries routes (Brief 4)
+  const entriesRouter = createEntriesRouter({
+    config,
+    repo: entriesRepo ?? new InMemoryEntriesRepository(),
+    requireAuth,
+    requireCsrf,
+    now: authOptions?.now,
   });
+  app.use(entriesRouter);
 
   // 404 handler for unknown routes
   app.use((_req: Request, _res: Response, next: NextFunction) => {

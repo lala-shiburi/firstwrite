@@ -1,12 +1,14 @@
-import 'dotenv/config';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { loadConfig } from '../config.js';
 import { createDbPool } from './index.js';
 import { createLogger } from '../logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, '../../../../.env') });
+dotenv.config();
 
 export async function runMigrations(connectionString: string) {
   const logger = createLogger();

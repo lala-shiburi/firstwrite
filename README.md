@@ -63,6 +63,23 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
    - `DELETE /api/account` requires password re-entry, sets `users.deleted_at`, immediately revokes all sessions, and enqueues a hard-delete job (`AccountJobScheduler`) for 14 days later.
    - Logging in during the 14-day grace period prompts the user (`403 ACCOUNT_DELETION_PENDING`) and cancels deletion when `cancelDeletion: true` is supplied.
 
+## What Was Built in Brief 4 (Entries API and the Writing Experience)
+
+1. **Entries API & User-Local Date Enforcement ([`apps/api/src/entries/routes.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/entries/routes.ts), [`apps/api/src/entries/repository.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/entries/repository.ts))**:
+   - `PUT /api/entries/:date` validates calendar dates (`YYYY-MM-DD`), computes the user's local calendar date from `users.timezone` (`getUserLocalDate`), and rejects dates more than one day in the future (`400 FUTURE_DATE_NOT_ALLOWED`).
+   - Enforces a generous maximum entry size (`100,000` characters, returning `413 ENTRY_TOO_LARGE` beyond it), computes `word_count` from plaintext, and encrypts content with AES-256-GCM bound to the row via AAD (`buildEntryAad(userId, date)`).
+2. **Owner-Only Access & Metadata-Only List Endpoint**:
+   - `GET /api/entries/:date` and `DELETE /api/entries/:date` are scoped strictly to `req.auth.user.id` so a user can never read, overwrite, or delete another user's entry by guessing dates.
+   - `GET /api/entries?from=&to=` queries only metadata (`entry_date`, `word_count`, `created_at`, `updated_at`, plus aggregate `totalEntries` and `totalWords`) without selecting or decrypting `content_enc`.
+3. **Optimistic Concurrency & Conflict Resolution**:
+   - `PUT /api/entries/:date` accepts `expectedUpdatedAt` and compares it against the stored `updated_at`. On conflict between two devices, it returns `409 ENTRY_CONFLICT` with the decrypted `serverEntry` so the client can merge both versions rather than silently overwriting.
+4. **Distraction-Free Editor, Resilient Autosave & Views ([`apps/web/src/App.tsx`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/App.tsx))**:
+   - Opens directly on the user's local date (`getUserLocalDate(now, timezone)`), with live word count and progress bar toward the daily goal (default `750` words).
+   - Autosaves after a `1.5s` debounce when typing stops, on editor blur, on tab hide (`visibilitychange`), and on `beforeunload` (warning before tab close if unsaved changes exist).
+   - On network failure, keeps all text in memory, displays `"Offline, will retry"`, and retries with exponential backoff (and immediately on `online` reconnection).
+   - Includes both an **Entries** list view and a monthly **Calendar** view highlighting days with entries; tapping any day opens it for viewing and editing.
+   - Responsive and accessible: comfortable readable line length (`max-w-[68ch]`), keyboard navigable, proper ARIA roles/labels, `motion-reduce` support, and system dark mode (`dark:`).
+
 ## Getting Started (Local Development)
 
 ### Quick Start with Docker Compose
