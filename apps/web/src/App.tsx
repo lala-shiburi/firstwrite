@@ -6,6 +6,8 @@ import {
   type EntrySummary,
   type PushSubscriptionItem,
   type UserSettings,
+  type WeeklySummariesListResponse,
+  type WeeklySummaryItem,
 } from '@firstwrite/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -130,7 +132,9 @@ export function MorningPagesShell({
 }: Omit<MorningPagesAppProps, 'queryClient'>) {
   const todayLocal = useMemo(() => getUserLocalDate(now(), timezone), [now, timezone]);
   const [selectedDate, setSelectedDate] = useState<string>(todayLocal);
-  const [activeView, setActiveView] = useState<'write' | 'list' | 'calendar' | 'settings'>('write');
+  const [activeView, setActiveView] = useState<
+    'write' | 'list' | 'calendar' | 'reviews' | 'settings'
+  >('write');
   const [calendarMonth, setCalendarMonth] = useState<string>(todayLocal.slice(0, 7));
 
   const [content, setContent] = useState<string>('');
@@ -159,6 +163,13 @@ export function MorningPagesShell({
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportStatusMessage, setExportStatusMessage] = useState<string | null>(null);
   const [exportErrorMessage, setExportErrorMessage] = useState<string | null>(null);
+
+  // Weekly AI Summaries & Consent state (Brief 8)
+  const [aiConsentAt, setAiConsentAt] = useState<string | null>(null);
+  const [weeklySummaryEnabled, setWeeklySummaryEnabled] = useState<boolean>(false);
+  const [summaryDeliveryTime, setSummaryDeliveryTime] = useState<string>('18:00');
+  const [weeklySummaries, setWeeklySummaries] = useState<WeeklySummaryItem[]>([]);
+  const [selectedSummaryWeekStart, setSelectedSummaryWeekStart] = useState<string | null>(null);
 
   // PWA install & update prompt states
   const [deferredInstallPrompt, setDeferredInstallPrompt] =
@@ -609,6 +620,15 @@ export function MorningPagesShell({
           if (typeof s.reminderTime === 'string' && s.reminderTime.length >= 5) {
             setReminderTime(s.reminderTime.slice(0, 5));
           }
+          if (typeof s.weeklySummaryEnabled === 'boolean') {
+            setWeeklySummaryEnabled(s.weeklySummaryEnabled);
+          }
+          if (typeof s.summaryDeliveryTime === 'string' && s.summaryDeliveryTime.length >= 5) {
+            setSummaryDeliveryTime(s.summaryDeliveryTime.slice(0, 5));
+          }
+          if (s.aiConsentAt !== undefined) {
+            setAiConsentAt(s.aiConsentAt);
+          }
         }
 
         if (subsRes.ok) {
@@ -752,6 +772,95 @@ export function MorningPagesShell({
     }
   };
 
+  // Load weekly summaries when opening the Weekly Reviews view
+  useEffect(() => {
+    if (activeView !== 'reviews') return;
+    let cancelled = false;
+
+    async function loadWeeklySummaries() {
+      try {
+        const res = await fetch('/api/summaries', { credentials: 'include' });
+        if (cancelled) return;
+        if (res.ok) {
+          const data = (await res.json()) as Partial<WeeklySummariesListResponse>;
+          if (Array.isArray(data.summaries)) {
+            setWeeklySummaries(data.summaries);
+          }
+        }
+      } catch {
+        // Ignore offline fetch error
+      }
+    }
+
+    void loadWeeklySummaries();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView]);
+
+  const handleGrantAiConsentAndEnable = async () => {
+    setSettingsSavedNotice(null);
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({
+        aiConsent: true,
+        weeklySummaryEnabled: true,
+        summaryDeliveryTime,
+      }),
+    });
+
+    if (res.ok) {
+      const updated = (await res.json()) as Partial<UserSettings>;
+      setAiConsentAt(updated.aiConsentAt ?? now().toISOString());
+      setWeeklySummaryEnabled(Boolean(updated.weeklySummaryEnabled ?? true));
+      setSettingsSavedNotice('Weekly AI summary consent granted and summaries enabled.');
+    }
+  };
+
+  const handleWithdrawAiConsent = async () => {
+    setSettingsSavedNotice(null);
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken,
+      },
+      body: JSON.stringify({
+        aiConsent: false,
+        weeklySummaryEnabled: false,
+      }),
+    });
+
+    if (res.ok) {
+      setAiConsentAt(null);
+      setWeeklySummaryEnabled(false);
+      setSettingsSavedNotice('AI summary consent withdrawn and weekly summaries disabled.');
+    }
+  };
+
+  const handleDeleteSummary = async (weekStart: string) => {
+    const res = await fetch(`/api/summaries/${weekStart}`, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: {
+        'X-CSRF-Token': csrfToken,
+      },
+    });
+
+    if (res.ok) {
+      setWeeklySummaries((prev) => prev.filter((s) => s.weekStart !== weekStart));
+      if (selectedSummaryWeekStart === weekStart) {
+        setSelectedSummaryWeekStart(null);
+      }
+    }
+  };
+
   const handleDownloadExport = async () => {
     if (isExporting) return;
     setIsExporting(true);
@@ -886,6 +995,18 @@ export function MorningPagesShell({
             }`}
           >
             Calendar
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveView('reviews')}
+            aria-pressed={activeView === 'reviews'}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-stone-500 ${
+              activeView === 'reviews'
+                ? 'bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900'
+                : 'text-stone-700 dark:text-stone-300 hover:bg-stone-200/60 dark:hover:bg-stone-800'
+            }`}
+          >
+            Weekly reviews
           </button>
           <button
             type="button"
@@ -1115,6 +1236,89 @@ export function MorningPagesShell({
           </section>
         )}
 
+        {activeView === 'reviews' && (
+          <section aria-label="Weekly reviews" className="space-y-5">
+            <div>
+              <h2 className="text-lg font-medium">Weekly Reviews</h2>
+              <p
+                role="note"
+                className="mt-1 text-xs text-stone-600 dark:text-stone-400 rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-100/70 dark:bg-stone-900 px-3 py-2"
+              >
+                Weekly reviews are a reflective journaling tool and not therapy, medical, or
+                professional advice.
+              </p>
+            </div>
+
+            {weeklySummaries.length === 0 ? (
+              <p className="text-sm text-stone-500 py-8 text-center">
+                No weekly reviews yet. Enable weekly AI summaries in Settings to receive a Sunday
+                reflection.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {weeklySummaries.map((item) => {
+                  const isExpanded = selectedSummaryWeekStart === item.weekStart;
+                  return (
+                    <article
+                      key={item.weekStart}
+                      className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4 space-y-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSelectedSummaryWeekStart(isExpanded ? null : item.weekStart)
+                          }
+                          aria-expanded={isExpanded}
+                          className="text-left font-mono text-sm font-medium hover:underline focus:outline-none"
+                        >
+                          Week of {item.weekStart} to {item.weekEnd}
+                        </button>
+
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400">
+                            {item.status}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label={`Delete summary for ${item.weekStart}`}
+                            onClick={() => void handleDeleteSummary(item.weekStart)}
+                            className="px-2.5 py-1 rounded-lg border border-stone-300 dark:border-stone-700 text-xs text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+
+                      {item.themes && item.themes.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {item.themes.map((theme) => (
+                            <span
+                              key={theme}
+                              className="text-xs px-2 py-0.5 rounded-md bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300"
+                            >
+                              {theme}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {isExpanded && item.summaryMd && (
+                        <div
+                          aria-label={`Summary detail for ${item.weekStart}`}
+                          className="pt-2 border-t border-stone-100 dark:border-stone-800 text-sm leading-relaxed font-serif whitespace-pre-wrap"
+                        >
+                          {item.summaryMd}
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
         {activeView === 'settings' && (
           <section aria-label="Reminder and notification settings" className="space-y-6">
             <div>
@@ -1309,6 +1513,63 @@ export function MorningPagesShell({
                   {exportErrorMessage}
                 </p>
               )}
+            </div>
+
+            {/* Weekly AI Summaries Consent & Settings (Brief 8) */}
+            <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 space-y-4">
+              <div>
+                <h3 className="text-sm font-medium">Weekly AI Summary &amp; Consent</h3>
+                <p className="text-xs text-stone-600 dark:text-stone-400 mt-1">
+                  If you opt in, your Monday–Sunday entries are decrypted and sent to our configured
+                  LLM provider (<strong>Anthropic Claude</strong>) once each Sunday at your chosen
+                  local delivery time to generate your private weekly summary. Your summary is
+                  immediately encrypted before being stored. You can withdraw consent at any time,
+                  which stops processing immediately.
+                </p>
+                <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">
+                  Note: Weekly reviews are a reflective tool and not therapy or professional advice.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 pt-2 border-t border-stone-100 dark:border-stone-800">
+                <label htmlFor="summary-delivery-time-input" className="text-xs font-medium">
+                  Sunday delivery time (local time)
+                </label>
+                <input
+                  id="summary-delivery-time-input"
+                  type="time"
+                  aria-label="Sunday delivery time (local time)"
+                  value={summaryDeliveryTime}
+                  onChange={(e) => setSummaryDeliveryTime(e.target.value)}
+                  className="rounded-lg border border-stone-300 dark:border-stone-700 bg-transparent px-3 py-1.5 text-xs font-mono"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-stone-100 dark:border-stone-800">
+                <span className="text-xs text-stone-600 dark:text-stone-400">
+                  {aiConsentAt && weeklySummaryEnabled
+                    ? `Active (consented at ${aiConsentAt})`
+                    : 'Not enabled (entries are never sent to any LLM provider)'}
+                </span>
+
+                {aiConsentAt && weeklySummaryEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleWithdrawAiConsent()}
+                    className="px-3 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 text-xs font-medium text-stone-800 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800"
+                  >
+                    Withdraw AI consent &amp; disable
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleGrantAiConsentAndEnable()}
+                    className="px-3 py-1.5 rounded-lg bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 text-xs font-medium"
+                  >
+                    I consent — enable weekly AI summaries
+                  </button>
+                )}
+              </div>
             </div>
           </section>
         )}

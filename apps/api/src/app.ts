@@ -19,6 +19,11 @@ import {
 } from './export/index.js';
 import { createHttpLogger, createLogger } from './logger.js';
 import { createPushRouter, InMemoryPushRepository, type PushRepository } from './push/index.js';
+import {
+  createSummariesRouter,
+  InMemorySummariesRepository,
+  type SummariesRepository,
+} from './summaries/index.js';
 
 export class AppError extends Error {
   public readonly statusCode: number;
@@ -42,6 +47,7 @@ export interface CreateAppOptions {
   pushRepo?: PushRepository;
   exportRepo?: ExportRepository;
   exportBatchSize?: number;
+  summariesRepo?: SummariesRepository;
   registerRoutes?: (app: express.Express) => void;
 }
 
@@ -53,6 +59,7 @@ export function createApp({
   pushRepo,
   exportRepo,
   exportBatchSize,
+  summariesRepo,
   registerRoutes,
 }: CreateAppOptions) {
   const app = express();
@@ -165,6 +172,16 @@ export function createApp({
     now: authOptions?.now,
   });
   app.use(exportRouter);
+
+  // Mount weekly summaries routes (Brief 8)
+  const resolvedSummariesRepo = summariesRepo ?? new InMemorySummariesRepository();
+  const summariesRouter = createSummariesRouter({
+    config,
+    repo: resolvedSummariesRepo,
+    requireAuth,
+    requireCsrf,
+  });
+  app.use(summariesRouter);
 
   // 404 handler for unknown routes
   app.use((_req: Request, _res: Response, next: NextFunction) => {

@@ -121,6 +121,20 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
 5. **Frontend Export UI ([`apps/web/src/App.tsx`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/App.tsx))**:
    - Added the **Export Your Journal** card in **Settings** with format selector (`zip` / `md`), a `"Download all my entries"` button, spinner/progress state (`"Downloading entries…"`) during long downloads, and completion/error feedback.
 
+## What Was Built in Brief 8 (Weekly Summary Pipeline)
+
+1. **AI Consent Flow & Settings ([`apps/api/src/settings/routes.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/settings/routes.ts), [`apps/web/src/App.tsx`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/App.tsx))**:
+   - Plain-language disclosure in Settings explaining that Monday–Sunday entries are sent to Anthropic (Claude) to generate the weekly summary, with an explicit opt-in (`I consent — enable weekly AI summaries`) that stores `users.ai_consent_at` and enables `weekly_summary_enabled`, plus an immediate withdrawal button (`Withdraw AI consent & disable`) that clears `ai_consent_at` and stops processing.
+2. **Hourly Sunday Scheduler & Worker Pipeline ([`apps/api/src/summaries/pipeline.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/summaries/pipeline.ts), [`apps/api/src/summaries/repository.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/summaries/repository.ts))**:
+   - `pg-boss` hourly job (`weekly-summaries-hourly-tick`) selects consented + enabled users whose local time in `users.timezone` is on Sunday (`weekday === 0`) and at/after `summary_delivery_time`, inserts an idempotent `pending` `weekly_summaries` row (`UNIQUE (user_id, week_start)`), and enqueues `weekly-summaries-generate-user` with a payload containing only `{ userId, weekStart }`.
+   - Worker loads Monday–Sunday entries, decrypts them, skips with `status = 'skipped'` and `skip_reason = 'too_few_entries'` when fewer than 2 entries exist, enforces character caps (`8,000` per entry, `32,000` per week), re-verifies AI consent right before calling the LLM, validates structured JSON output (`summary_md`, `themes`, `distress_flag`) with a single retry on invalid output, encrypts `summary_enc` and `themes_enc` with AES-256-GCM + row-bound AAD (`buildSummaryAad`), and sends generic push/email notifications (`"Your week in review is ready"`) containing zero journal or summary content.
+3. **LLM Provider Abstraction & Cost Controls ([`apps/api/src/summaries/llm.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/summaries/llm.ts))**:
+   - `LlmProvider` interface with `AnthropicLlmProvider` (default model `claude-haiku-5-5` from config, timeouts, exponential backoff retries) and `MockLlmProvider` for deterministic tests.
+   - Monthly spend ceiling (`LLM_MONTHLY_SPEND_LIMIT_USD`) computed from recorded token usage; pauses summary generation and logs an operator alert when reached.
+4. **Summaries API & Weekly Reviews UI ([`apps/api/src/summaries/routes.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/summaries/routes.ts), [`apps/web/src/App.tsx`](file:///Users/lala/Documents/code/firstwrite/apps/web/src/App.tsx))**:
+   - Implemented `GET /api/summaries`, `GET /api/summaries/:weekStart`, and `DELETE /api/summaries/:weekStart`.
+   - Added the **Weekly reviews** view with a visible disclaimer (`role="note"`) that this is a reflective tool and not therapy or professional advice, expandable summary details, theme tags, and per-summary delete controls.
+
 ## Getting Started (Local Development)
 
 ### Quick Start with Docker Compose

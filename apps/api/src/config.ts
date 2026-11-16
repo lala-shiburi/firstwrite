@@ -76,7 +76,7 @@ export const envSchema = z.object({
   // LLM Provider & Cost Controls
   LLM_PROVIDER: z.enum(['anthropic', 'mock']).default('anthropic'),
   LLM_API_KEY: z.string().min(1, 'LLM_API_KEY is required'),
-  LLM_MODEL: z.string().min(1, 'LLM_MODEL is required').default('claude-haiku-4-5'),
+  LLM_MODEL: z.string().min(1, 'LLM_MODEL is required').default('claude-haiku-5-5'),
   LLM_MONTHLY_SPEND_LIMIT_USD: z.coerce
     .number()
     .positive('LLM_MONTHLY_SPEND_LIMIT_USD must be a positive number')

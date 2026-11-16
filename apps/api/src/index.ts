@@ -14,6 +14,7 @@ import { createDrizzleEntriesRepository } from './entries/index.js';
 import { createDrizzleExportRepository } from './export/index.js';
 import { createLogger } from './logger.js';
 import { createDrizzlePushRepository } from './push/index.js';
+import { createDrizzleSummariesRepository } from './summaries/index.js';
 
 const config = loadConfig();
 const logger = createLogger();
@@ -22,6 +23,7 @@ const authRepo = createDrizzleAuthRepository(db);
 const entriesRepo = createDrizzleEntriesRepository(db);
 const pushRepo = createDrizzlePushRepository(db);
 const exportRepo = createDrizzleExportRepository(db);
+const summariesRepo = createDrizzleSummariesRepository(db);
 const app = createApp({
   config,
   logger,
@@ -31,6 +33,7 @@ const app = createApp({
   entriesRepo,
   pushRepo,
   exportRepo,
+  summariesRepo,
 });
 
 const server = app.listen(config.PORT, () => {

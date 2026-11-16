@@ -55,6 +55,34 @@ export function getUserLocalDate(now: Date, timezone: string): string {
 }
 
 /**
+ * Returns the day of the week (`0` = Sunday, `1` = Monday, ..., `6` = Saturday)
+ * for a `YYYY-MM-DD` calendar date.
+ */
+export function getWeekdayOfLocalDate(localDateStr: string): number {
+  const parts = localDateStr.split('-');
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+/**
+ * Given a `YYYY-MM-DD` local calendar date, returns the Monday `weekStart` and Sunday `weekEnd`
+ * (`YYYY-MM-DD`) of that Monday–Sunday ISO week.
+ */
+export function getMondaySundayWeekBounds(localDateStr: string): {
+  weekStart: string;
+  weekEnd: string;
+} {
+  const weekday = getWeekdayOfLocalDate(localDateStr);
+  // Convert Sunday (0) to 7 so Monday=1 .. Sunday=7
+  const isoDay = weekday === 0 ? 7 : weekday;
+  const weekStart = addDaysToLocalDate(localDateStr, -(isoDay - 1));
+  const weekEnd = addDaysToLocalDate(weekStart, 6);
+  return { weekStart, weekEnd };
+}
+
+/**
  * Formats a `Date` instant into `HH:MM` (24-hour, `00:00`..`23:59`) in the given IANA timezone.
  * Handles DST transitions and half-hour / 45-minute offsets accurately.
  */
@@ -363,6 +391,18 @@ export const summaryStatusSchema = z.enum(['pending', 'done', 'skipped', 'failed
 
 export type SummaryStatus = z.infer<typeof summaryStatusSchema>;
 
+export const summaryWeekStartParamSchema = z.object({
+  weekStart: localDateSchema,
+});
+
+export const llmSummaryOutputSchema = z.object({
+  summary_md: z.string().min(1),
+  themes: z.array(z.string().min(1)).max(10),
+  distress_flag: z.boolean().optional().default(false),
+});
+
+export type LlmSummaryOutput = z.infer<typeof llmSummaryOutputSchema>;
+
 export const weeklySummaryItemSchema = z.object({
   weekStart: localDateSchema,
   weekEnd: localDateSchema,
@@ -375,6 +415,12 @@ export const weeklySummaryItemSchema = z.object({
 });
 
 export type WeeklySummaryItem = z.infer<typeof weeklySummaryItemSchema>;
+
+export const weeklySummariesListResponseSchema = z.object({
+  summaries: z.array(weeklySummaryItemSchema),
+});
+
+export type WeeklySummariesListResponse = z.infer<typeof weeklySummariesListResponseSchema>;
 
 // ───────────── Export & Account schemas ─────────────
 
