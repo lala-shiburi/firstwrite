@@ -100,41 +100,41 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           DEPLOY_SHA: ${{ github.sha }}
-          APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
-          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
-          CORS_ORIGIN: ${{ secrets.CORS_ORIGIN }}
-          TRUST_PROXY: ${{ secrets.TRUST_PROXY }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          APP_DOMAIN: ${{ vars.APP_DOMAIN }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          CORS_ORIGIN: ${{ vars.CORS_ORIGIN }}
+          TRUST_PROXY: ${{ vars.TRUST_PROXY }}
+          POSTGRES_USER: ${{ vars.POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_DB: ${{ vars.POSTGRES_DB }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-          ENCRYPTION_KEY_CURRENT_VERSION: ${{ secrets.ENCRYPTION_KEY_CURRENT_VERSION }}
+          ENCRYPTION_KEY_CURRENT_VERSION: ${{ vars.ENCRYPTION_KEY_CURRENT_VERSION }}
           ENCRYPTION_KEY_V1: ${{ secrets.ENCRYPTION_KEY_V1 }}
           ENCRYPTION_KEYS_JSON: ${{ secrets.ENCRYPTION_KEYS_JSON }}
-          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PUBLIC_KEY: ${{ vars.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
-          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+          VAPID_SUBJECT: ${{ vars.VAPID_SUBJECT }}
           VITE_VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
-          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+          EMAIL_PROVIDER: ${{ vars.EMAIL_PROVIDER }}
           EMAIL_PROVIDER_API_KEY: ${{ secrets.EMAIL_PROVIDER_API_KEY }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          EMAIL_FROM: ${{ vars.EMAIL_FROM }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_MODEL: ${{ secrets.LLM_MODEL }}
-          LLM_MONTHLY_SPEND_LIMIT_USD: ${{ secrets.LLM_MONTHLY_SPEND_LIMIT_USD }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_MONTHLY_SPEND_LIMIT_USD: ${{ vars.LLM_MONTHLY_SPEND_LIMIT_USD }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           VITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-          VITE_API_BASE_URL: https://${{ secrets.APP_DOMAIN }}/api
+          VITE_API_BASE_URL: ${{ vars.APP_DOMAIN }}/api
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          fingerprint: ${{ vars.VPS_HOST_FINGERPRINT }}
           envs: DEPLOY_SHA,APP_DOMAIN,APP_BASE_URL,CORS_ORIGIN,TRUST_PROXY,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,SESSION_SECRET,ENCRYPTION_KEY_CURRENT_VERSION,ENCRYPTION_KEY_V1,ENCRYPTION_KEYS_JSON,VAPID_PUBLIC_KEY,VAPID_PRIVATE_KEY,VAPID_SUBJECT,VITE_VAPID_PUBLIC_KEY,EMAIL_PROVIDER,EMAIL_PROVIDER_API_KEY,EMAIL_FROM,LLM_PROVIDER,LLM_API_KEY,LLM_MODEL,LLM_MONTHLY_SPEND_LIMIT_USD,SENTRY_DSN,VITE_SENTRY_DSN,VITE_API_BASE_URL
           script: |
             set -eu
             : "${DEPLOY_SHA:?DEPLOY_SHA is required}"
-            cd "$HOME/morning-pages"
+            cd "$HOME/firstwrite"
             git fetch --no-tags origin "$DEPLOY_SHA"
             git reset --hard "$DEPLOY_SHA"
 
