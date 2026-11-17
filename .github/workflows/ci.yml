@@ -124,7 +124,7 @@ jobs:
           LLM_MONTHLY_SPEND_LIMIT_USD: ${{ vars.LLM_MONTHLY_SPEND_LIMIT_USD }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           VITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-          VITE_API_BASE_URL: ${{ vars.APP_DOMAIN }}/api
+          VITE_API_BASE_URL: https://${{ vars.APP_DOMAIN }}/api
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -176,8 +176,8 @@ jobs:
             docker compose run --build --rm --no-deps api npm run db:migrate:prod --workspace=@firstwrite/api
             docker compose up -d --build
 
-            curl --fail --silent --show-error --max-time 10 --retry 12 --retry-delay 5 --retry-connrefused "$APP_DOMAIN/api/health"
-            redirect_target=$(curl --silent --show-error --head --max-time 10 --output /dev/null --write-out '%{redirect_url}' "$APP_DOMAIN/api/health")
+            curl --fail --silent --show-error --max-time 10 --retry 12 --retry-delay 5 --retry-connrefused "https://$APP_DOMAIN/api/health"
+            redirect_target=$(curl --silent --show-error --head --max-time 10 --output /dev/null --write-out '%{redirect_url}' "http://$APP_DOMAIN/api/health")
             case "$redirect_target" in
               https://*) ;;
               *) printf '%s\n' 'Traefik HTTP-to-HTTPS redirect is missing or invalid.' >&2; exit 1 ;;
