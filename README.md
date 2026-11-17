@@ -25,8 +25,7 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
    - Bootstrapped Express 5 in [`apps/api/src/app.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/app.ts) with `pino` + `pino-http` ([`apps/api/src/logger.ts`](file:///Users/lala/Documents/code/firstwrite/apps/api/src/logger.ts)) configured with a strict redaction list (`REDACT_PATHS`) so request bodies, entry content, passwords, cookies, and tokens are never logged.
    - Configured `helmet`, same-origin `cors`, `trust proxy` for running behind Traefik, `/health` & `/api/health` endpoints, and centralized error-handling middleware that catches async errors and formats Zod validation errors.
 5. **Local Development & CI**:
-   - Added [`docker-compose.yml`](file:///Users/lala/Documents/code/firstwrite/docker-compose.yml) to start PostgreSQL 16, run migrations, and serve both `api` and `web` with hot reload in one command.
-   - Added GitHub Actions CI workflow ([`.github/workflows/ci.yml`](file:///Users/lala/Documents/code/firstwrite/.github/workflows/ci.yml)) running `npm run check` on every push and pull request.
+   - Uses npm workspaces for local development and GitHub Actions CI; production deployment is handled by [`docker-compose.yaml`](./docker-compose.yaml) and [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
 
 ## What Was Built in Brief 2 (Encryption Module)
 
@@ -149,26 +148,15 @@ This repository uses **npm workspaces** with TypeScript strict mode across all p
 
 ## Getting Started (Local Development)
 
-### Quick Start with Docker Compose
-
-From a fresh clone:
-
 ```bash
 cp .env.example .env
-docker compose up
-```
-
-This single command starts PostgreSQL, waits for it to be healthy, runs the database migrations, and starts both the Express API (`http://localhost:3000`) and Vite React PWA (`http://localhost:5173`) with hot reload.
-
-### Running Locally Without Docker (Host Node.js + Local Postgres)
-
-```bash
-cp .env.example .env
-npm install
+npm ci
 npm run db:migrate
 npm run db:seed
 npm run dev
 ```
+
+The local API and Vite app use the configured local PostgreSQL connection. Production Compose intentionally publishes no host ports and assumes the existing Traefik `proxy` network; see [production operations](./deploy/OPERATIONS.md).
 
 ## Running Lint, Typecheck, and Tests
 
@@ -185,3 +173,11 @@ npm run lint        # ESLint across all workspaces
 npm run typecheck   # Build shared types + tsc --noEmit across all workspaces
 npm run test        # Vitest unit & integration test suite
 ```
+
+## What Was Built in Brief 10 (Deployment and Operations)
+
+- Added the production-only [Compose stack](./docker-compose.yaml) for PostgreSQL 15, non-root multi-stage API/web images, the external Traefik proxy network, and an internal-only database network. The API validates its Compose DB host/credentials and retries initial DB connections. A small non-root Node static server serves deep-link SPA routes with service-worker/manifest no-cache headers, immutable hashed-asset caching, gzip compression, and security headers; Traefik handles public routing and TLS.
+- Added API and browser Sentry setup with request/body, breadcrumb, identity, and exception-message scrubbing; production config requires `SENTRY_DSN`, which CI also passes as the browser's `VITE_SENTRY_DSN`.
+- Added the main-branch CI/deploy workflow with shared build, PostgreSQL 15 API migration/tests, web lint/build/tests, serialized exact-SHA deploys, pinned SSH host fingerprint, pre-migration encrypted dump, migrations before app restart, HTTPS health/redirect checks, and post-check image pruning.
+- Added an encrypted `pg_dump` backup script and the complete deployment, restore, rollback, key rotation, security incident, and monitoring procedure in [deploy/OPERATIONS.md](./deploy/OPERATIONS.md). The runbook has a live-VPS restore-test log ready to complete; that live test requires VPS/object-storage access and has not been represented as already performed.
+- Run `npm run check` for lint, typecheck, and the complete automated test suite.

@@ -1,0 +1,11 @@
+.env
+.env.*
+.git
+.gitignore
+node_modules
+**/node_modules
+**/dist
+**/coverage
+*.log
+*.tsbuildinfo
+.DS_Store

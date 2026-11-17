@@ -62,4 +62,53 @@ describe('API loadConfig', () => {
     expect(() => loadConfig(envMissingSecrets)).toThrowError(/EMAIL_PROVIDER_API_KEY/);
     expect(() => loadConfig(envMissingSecrets)).toThrowError(/LLM_API_KEY/);
   });
+
+  it('requires production database credentials and validates the Compose database URL', () => {
+    const productionEnv: NodeJS.ProcessEnv = {
+      ...validBaseEnv,
+      NODE_ENV: 'production',
+      APP_BASE_URL: 'https://journal.example',
+      CORS_ORIGIN: 'https://journal.example',
+      SENTRY_DSN: 'https://public@example.ingest.sentry.io/123',
+      DATABASE_URL: 'postgresql://writer:db-safe_password@firstwrite-db:5432/morning_pages',
+      POSTGRES_USER: 'writer',
+      POSTGRES_PASSWORD: 'db-safe_password',
+      POSTGRES_DB: 'morning_pages',
+    };
+
+    expect(loadConfig(productionEnv).DATABASE_URL).toContain('@firstwrite-db:5432/');
+    expect(() =>
+      loadConfig({
+        ...productionEnv,
+        DATABASE_URL: 'postgresql://writer:bad@other:5432/db',
+      }),
+    ).toThrowError(/DATABASE_URL host must be the Compose database service/);
+    expect(() =>
+      loadConfig({
+        ...productionEnv,
+        DATABASE_URL: 'postgresql://writer:wrong@firstwrite-db:5432/morning_pages',
+      }),
+    ).toThrowError(/credentials and database must match POSTGRES_\* values/);
+    expect(() => loadConfig({ ...validBaseEnv, NODE_ENV: 'production' })).toThrowError(
+      /POSTGRES_USER/,
+    );
+    expect(() =>
+      loadConfig({
+        ...productionEnv,
+        CORS_ORIGIN: undefined,
+      }),
+    ).toThrowError(/CORS_ORIGIN is required in production/);
+    expect(() =>
+      loadConfig({
+        ...productionEnv,
+        SENTRY_DSN: undefined,
+      }),
+    ).toThrowError(/SENTRY_DSN is required in production/);
+  });
+
+  it('rejects invalid trust proxy hop values', () => {
+    expect(() => loadConfig({ ...validBaseEnv, TRUST_PROXY: 'nearby' })).toThrowError(
+      /TRUST_PROXY must be true, false, or a non-negative hop count/,
+    );
+  });
 });

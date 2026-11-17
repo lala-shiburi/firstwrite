@@ -201,6 +201,57 @@ function createTestHarness(configOverrides: Partial<typeof baseTestConfig> = {})
 }
 
 describe('Brief 3: Authentication and Accounts', () => {
+  it('stores the forwarded real client IP in sessions and rate-limits by that IP', async () => {
+    const h = createTestHarness();
+    const remoteProxyAddress = '172.18.0.5';
+    const clientIp = '203.0.113.42';
+
+    const registration = await injectRequest(h.app, {
+      method: 'POST',
+      url: '/api/auth/register',
+      remoteAddress: remoteProxyAddress,
+      headers: { 'X-Forwarded-For': clientIp },
+      body: {
+        email: 'ip-check@example.com',
+        password: 'correct-horse-battery-staple',
+        timezone: 'UTC',
+      },
+    });
+    expect(registration.status).toBe(201);
+    expect(Array.from(h.repo.sessions.values())[0]?.ip).toBe(clientIp);
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await injectRequest(h.app, {
+        method: 'POST',
+        url: '/api/auth/login',
+        remoteAddress: remoteProxyAddress,
+        headers: { 'X-Forwarded-For': clientIp },
+        body: {
+          email: `unknown-${attempt}@example.com`,
+          password: 'not-the-password',
+        },
+      });
+    }
+
+    const sameClient = await injectRequest(h.app, {
+      method: 'POST',
+      url: '/api/auth/login',
+      remoteAddress: remoteProxyAddress,
+      headers: { 'X-Forwarded-For': clientIp },
+      body: { email: 'another-unknown@example.com', password: 'not-the-password' },
+    });
+    const differentClient = await injectRequest(h.app, {
+      method: 'POST',
+      url: '/api/auth/login',
+      remoteAddress: remoteProxyAddress,
+      headers: { 'X-Forwarded-For': '198.51.100.15' },
+      body: { email: 'another-unknown@example.com', password: 'not-the-password' },
+    });
+
+    expect(sameClient.status).toBe(429);
+    expect(differentClient.status).toBe(401);
+  });
+
   it('registers with Argon2id password hash, captures timezone, hashes session & verify tokens, and restricts AI summaries until verified', async () => {
     const h = createTestHarness();
 

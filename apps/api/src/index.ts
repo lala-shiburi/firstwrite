@@ -9,16 +9,25 @@ dotenv.config();
 import { createApp } from './app.js';
 import { createDrizzleAuthRepository } from './auth/index.js';
 import { loadConfig } from './config.js';
-import { createDbPool } from './db/index.js';
+import { createDbPool, waitForDatabase } from './db/index.js';
 import { createDrizzleEntriesRepository } from './entries/index.js';
 import { createDrizzleExportRepository } from './export/index.js';
 import { createLogger } from './logger.js';
+import { initializeMonitoring } from './monitoring.js';
 import { createDrizzlePushRepository } from './push/index.js';
 import { createDrizzleSummariesRepository } from './summaries/index.js';
 
 const config = loadConfig();
 const logger = createLogger();
+initializeMonitoring(config.SENTRY_DSN);
 const { pool, db } = createDbPool(config.DATABASE_URL);
+try {
+  await waitForDatabase(pool);
+} catch {
+  logger.fatal('Database connection failed after retrying startup connections.');
+  await pool.end();
+  process.exit(1);
+}
 const authRepo = createDrizzleAuthRepository(db);
 const entriesRepo = createDrizzleEntriesRepository(db);
 const pushRepo = createDrizzlePushRepository(db);
@@ -36,7 +45,7 @@ const app = createApp({
   summariesRepo,
 });
 
-const server = app.listen(config.PORT, () => {
+const server = app.listen(config.PORT, config.HOST, () => {
   logger.info(
     { port: config.PORT, env: config.NODE_ENV, appBaseUrl: config.APP_BASE_URL },
     'Morning Pages API listening',

@@ -10,13 +10,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:prod": "node dist/db/migrate.js",
     "db:seed": "tsx src/db/seed.ts",
     "db:reencrypt": "tsx src/crypto/reencrypt.ts",
+    "db:reencrypt:prod": "node dist/crypto/reencrypt.js",
     "eval:summaries": "tsx src/summaries/run-eval.ts"
   },
   "dependencies": {
     "@firstwrite/shared": "*",
     "@noble/hashes": "^1.8.0",
+    "@sentry/node": "^11.13.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.36.4",

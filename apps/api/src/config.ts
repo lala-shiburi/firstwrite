@@ -25,63 +25,149 @@ const encryptionKeyValidator = z
     },
   );
 
-export const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-  APP_BASE_URL: z.string().url('APP_BASE_URL must be a valid URL'),
-  TRUST_PROXY: z
-    .string()
-    .default('1')
-    .transform((val) => {
-      if (val === 'true') return true;
-      if (val === 'false') return false;
-      const num = Number(val);
-      return Number.isNaN(num) ? val : num;
-    }),
+export const envSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    HOST: z.string().min(1).default('0.0.0.0'),
+    APP_BASE_URL: z.string().url('APP_BASE_URL must be a valid URL'),
+    CORS_ORIGIN: z.string().url('CORS_ORIGIN must be a valid URL').optional(),
+    TRUST_PROXY: z
+      .string()
+      .default('1')
+      .refine((val) => val === 'true' || val === 'false' || /^\d+$/.test(val), {
+        message: 'TRUST_PROXY must be true, false, or a non-negative hop count',
+      })
+      .transform((val) => (val === 'true' ? true : val === 'false' ? false : Number(val))),
 
-  // Database
-  DATABASE_URL: z
-    .string()
-    .min(1, 'DATABASE_URL is required')
-    .refine(
-      (url) => url.startsWith('postgres://') || url.startsWith('postgresql://'),
-      'DATABASE_URL must be a postgres:// or postgresql:// connection string',
-    ),
+    // Database
+    DATABASE_URL: z
+      .string()
+      .min(1, 'DATABASE_URL is required')
+      .refine(
+        (url) => url.startsWith('postgres://') || url.startsWith('postgresql://'),
+        'DATABASE_URL must be a postgres:// or postgresql:// connection string',
+      ),
+    POSTGRES_USER: z
+      .string()
+      .regex(/^[A-Za-z0-9_]+$/)
+      .optional(),
+    POSTGRES_PASSWORD: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
+    POSTGRES_DB: z
+      .string()
+      .regex(/^[A-Za-z0-9_]+$/)
+      .optional(),
 
-  // Encryption (AES-256-GCM keyring)
-  ENCRYPTION_KEY_CURRENT_VERSION: z.coerce.number().int().positive().default(1),
-  ENCRYPTION_KEY_V1: encryptionKeyValidator,
-  ENCRYPTION_KEYS_JSON: z.string().optional(),
+    // Encryption (AES-256-GCM keyring)
+    ENCRYPTION_KEY_CURRENT_VERSION: z.coerce.number().int().positive().default(1),
+    ENCRYPTION_KEY_V1: encryptionKeyValidator,
+    ENCRYPTION_KEYS_JSON: z.string().optional(),
 
-  // Auth & Session
-  SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
-  TURNSTILE_ENABLED: z
-    .enum(['true', 'false'])
-    .default('false')
-    .transform((v) => v === 'true'),
-  TURNSTILE_SECRET_KEY: z.string().optional(),
+    // Auth & Session
+    SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
+    TURNSTILE_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    TURNSTILE_SECRET_KEY: z.string().optional(),
 
-  // Web Push (VAPID)
-  VAPID_PUBLIC_KEY: z.string().min(1, 'VAPID_PUBLIC_KEY is required'),
-  VAPID_PRIVATE_KEY: z.string().min(1, 'VAPID_PRIVATE_KEY is required'),
-  VAPID_SUBJECT: z
-    .string()
-    .min(1, 'VAPID_SUBJECT is required (e.g. mailto:support@example.com or https:// URL)'),
+    // Web Push (VAPID)
+    VAPID_PUBLIC_KEY: z.string().min(1, 'VAPID_PUBLIC_KEY is required'),
+    VAPID_PRIVATE_KEY: z.string().min(1, 'VAPID_PRIVATE_KEY is required'),
+    VAPID_SUBJECT: z
+      .string()
+      .min(1, 'VAPID_SUBJECT is required (e.g. mailto:support@example.com or https:// URL)'),
 
-  // Transactional Email Provider
-  EMAIL_PROVIDER: z.enum(['console', 'resend', 'postmark', 'ses']).default('console'),
-  EMAIL_PROVIDER_API_KEY: z.string().min(1, 'EMAIL_PROVIDER_API_KEY is required'),
-  EMAIL_FROM: z.string().min(1, 'EMAIL_FROM is required'),
+    // Transactional Email Provider
+    EMAIL_PROVIDER: z.enum(['console', 'resend', 'postmark', 'ses']).default('console'),
+    EMAIL_PROVIDER_API_KEY: z.string().min(1, 'EMAIL_PROVIDER_API_KEY is required'),
+    EMAIL_FROM: z.string().min(1, 'EMAIL_FROM is required'),
 
-  // LLM Provider & Cost Controls
-  LLM_PROVIDER: z.enum(['anthropic', 'mock']).default('anthropic'),
-  LLM_API_KEY: z.string().min(1, 'LLM_API_KEY is required'),
-  LLM_MODEL: z.string().min(1, 'LLM_MODEL is required').default('claude-haiku-5-5'),
-  LLM_MONTHLY_SPEND_LIMIT_USD: z.coerce
-    .number()
-    .positive('LLM_MONTHLY_SPEND_LIMIT_USD must be a positive number')
-    .default(50),
-});
+    // LLM Provider & Cost Controls
+    LLM_PROVIDER: z.enum(['anthropic', 'mock']).default('anthropic'),
+    LLM_API_KEY: z.string().min(1, 'LLM_API_KEY is required'),
+    LLM_MODEL: z.string().min(1, 'LLM_MODEL is required').default('claude-haiku-5-5'),
+    LLM_MONTHLY_SPEND_LIMIT_USD: z.coerce
+      .number()
+      .positive('LLM_MONTHLY_SPEND_LIMIT_USD must be a positive number')
+      .default(50),
+    SENTRY_DSN: z
+      .string()
+      .optional()
+      .transform((val) => val?.trim() || undefined)
+      .pipe(z.string().url('SENTRY_DSN must be a valid URL').optional()),
+  })
+  .superRefine((config, ctx) => {
+    if (config.NODE_ENV === 'production' && !config.CORS_ORIGIN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CORS_ORIGIN'],
+        message: 'CORS_ORIGIN is required in production',
+      });
+    }
+    if (config.NODE_ENV === 'production' && !config.SENTRY_DSN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SENTRY_DSN'],
+        message: 'SENTRY_DSN is required in production',
+      });
+    }
+
+    const postgresConfig = [config.POSTGRES_USER, config.POSTGRES_PASSWORD, config.POSTGRES_DB];
+    const hasPostgresConfig = postgresConfig.some((value) => value !== undefined);
+    if (config.NODE_ENV === 'production' || hasPostgresConfig) {
+      for (const [key, value] of [
+        ['POSTGRES_USER', config.POSTGRES_USER],
+        ['POSTGRES_PASSWORD', config.POSTGRES_PASSWORD],
+        ['POSTGRES_DB', config.POSTGRES_DB],
+      ] as const) {
+        if (!value) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required when running in production`,
+          });
+        }
+      }
+
+      if (config.POSTGRES_USER && config.POSTGRES_PASSWORD && config.POSTGRES_DB) {
+        try {
+          const databaseUrl = new URL(config.DATABASE_URL);
+          const databaseName = decodeURIComponent(databaseUrl.pathname.slice(1));
+          const databaseUser = decodeURIComponent(databaseUrl.username);
+          const databasePassword = decodeURIComponent(databaseUrl.password);
+
+          if (databaseUrl.hostname !== 'firstwrite-db') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['DATABASE_URL'],
+              message: 'DATABASE_URL host must be the Compose database service firstwrite-db',
+            });
+          }
+          if (
+            databaseUser !== config.POSTGRES_USER ||
+            databasePassword !== config.POSTGRES_PASSWORD ||
+            databaseName !== config.POSTGRES_DB
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['DATABASE_URL'],
+              message: 'DATABASE_URL credentials and database must match POSTGRES_* values',
+            });
+          }
+        } catch {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['DATABASE_URL'],
+            message: 'DATABASE_URL must be a valid PostgreSQL connection URL',
+          });
+        }
+      }
+    }
+  });
 
 export type AppConfig = z.infer<typeof envSchema> & {
   keyring: Keyring;

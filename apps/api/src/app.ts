@@ -24,6 +24,7 @@ import {
   InMemorySummariesRepository,
   type SummariesRepository,
 } from './summaries/index.js';
+import { captureServerError } from './monitoring.js';
 
 export class AppError extends Error {
   public readonly statusCode: number;
@@ -71,7 +72,7 @@ export function createApp({
   app.use(helmet());
 
   // Same-origin CORS policy (allows configured APP_BASE_URL and requests with no Origin header)
-  const allowedOrigin = new URL(config.APP_BASE_URL).origin;
+  const allowedOrigin = new URL(config.CORS_ORIGIN ?? config.APP_BASE_URL).origin;
   app.use(
     cors({
       origin(requestOrigin, callback) {
@@ -217,9 +218,10 @@ export function createApp({
     if (err instanceof AppError) {
       if (err.statusCode >= 500) {
         (req.log ?? logger).error(
-          { err: { name: err.name, code: err.code, message: err.message } },
+          { err: { name: err.name, code: err.code, statusCode: err.statusCode } },
           'Application error',
         );
+        captureServerError(err);
       }
       res.status(err.statusCode).json({
         error: {
@@ -232,9 +234,9 @@ export function createApp({
     }
 
     // Never log full error objects that might contain user input/bodies; log only safe metadata
-    const safeMessage = err instanceof Error ? err.message : 'Unexpected error';
     const safeName = err instanceof Error ? err.name : 'Error';
-    (req.log ?? logger).error({ err: { name: safeName, message: safeMessage } }, 'Unhandled error');
+    (req.log ?? logger).error({ err: { name: safeName } }, 'Unhandled error');
+    captureServerError(err);
 
     res.status(500).json({
       error: {

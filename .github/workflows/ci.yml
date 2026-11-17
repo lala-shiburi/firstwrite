@@ -1,27 +1,186 @@
-name: CI
+name: CI and Deploy
 
 on:
-  push:
-    branches: ['*']
   pull_request:
-    branches: ['*']
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firstwrite-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  check:
-    name: Lint, Typecheck & Test
+  build-shared:
+    name: Build shared package
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: 'npm'
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace=@firstwrite/shared
 
-      - name: Install dependencies
-        run: npm ci
+  test-api:
+    name: Test API against PostgreSQL 15
+    needs: build-shared
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: firstwrite_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test_user -d firstwrite_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://test_user:test_password@localhost:5432/firstwrite_test
+      APP_BASE_URL: http://localhost:5173
+      ENCRYPTION_KEY_CURRENT_VERSION: '1'
+      ENCRYPTION_KEY_V1: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      SESSION_SECRET: test-session-secret-0123456789abcdef
+      VAPID_PUBLIC_KEY: test-vapid-public-key
+      VAPID_PRIVATE_KEY: test-vapid-private-key
+      VAPID_SUBJECT: mailto:test@example.com
+      EMAIL_PROVIDER: console
+      EMAIL_PROVIDER_API_KEY: test-email-key
+      EMAIL_FROM: test@example.com
+      LLM_PROVIDER: mock
+      LLM_API_KEY: test-llm-key
+      LLM_MODEL: test-model
+      LLM_MONTHLY_SPEND_LIMIT_USD: '50'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace=@firstwrite/shared
+      - name: Apply migrations against PostgreSQL 15
+        run: npm run db:migrate --workspace=@firstwrite/api
+      - name: Test API
+        run: npx vitest run apps/api/src
 
-      - name: Run lint, typecheck, and test suite
-        run: npm run check
+  test-web:
+    name: Lint, build and test web
+    needs: build-shared
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace=@firstwrite/shared
+      - run: npm run lint
+      - run: npm run build --workspace=@firstwrite/web
+      - run: npx vitest run apps/web/src
+
+  deploy:
+    name: Deploy exact main commit
+    needs: [test-api, test-web]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over pinned SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+          APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          CORS_ORIGIN: ${{ secrets.CORS_ORIGIN }}
+          TRUST_PROXY: ${{ secrets.TRUST_PROXY }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          ENCRYPTION_KEY_CURRENT_VERSION: ${{ secrets.ENCRYPTION_KEY_CURRENT_VERSION }}
+          ENCRYPTION_KEY_V1: ${{ secrets.ENCRYPTION_KEY_V1 }}
+          ENCRYPTION_KEYS_JSON: ${{ secrets.ENCRYPTION_KEYS_JSON }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+          VITE_VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+          EMAIL_PROVIDER_API_KEY: ${{ secrets.EMAIL_PROVIDER_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          LLM_MONTHLY_SPEND_LIMIT_USD: ${{ secrets.LLM_MONTHLY_SPEND_LIMIT_USD }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          VITE_API_BASE_URL: https://${{ secrets.APP_DOMAIN }}/api
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: DEPLOY_SHA,APP_DOMAIN,APP_BASE_URL,CORS_ORIGIN,TRUST_PROXY,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,SESSION_SECRET,ENCRYPTION_KEY_CURRENT_VERSION,ENCRYPTION_KEY_V1,ENCRYPTION_KEYS_JSON,VAPID_PUBLIC_KEY,VAPID_PRIVATE_KEY,VAPID_SUBJECT,VITE_VAPID_PUBLIC_KEY,EMAIL_PROVIDER,EMAIL_PROVIDER_API_KEY,EMAIL_FROM,LLM_PROVIDER,LLM_API_KEY,LLM_MODEL,LLM_MONTHLY_SPEND_LIMIT_USD,SENTRY_DSN,VITE_SENTRY_DSN,VITE_API_BASE_URL
+          script: |
+            set -eu
+            : "${DEPLOY_SHA:?DEPLOY_SHA is required}"
+            cd "$HOME/morning-pages"
+            git fetch --no-tags origin "$DEPLOY_SHA"
+            git reset --hard "$DEPLOY_SHA"
+
+            umask 077
+            cat > .env <<EOF
+            NODE_ENV=production
+            HOST=0.0.0.0
+            PORT=3000
+            TRUST_PROXY=${TRUST_PROXY:-1}
+            APP_DOMAIN=$APP_DOMAIN
+            APP_BASE_URL=$APP_BASE_URL
+            CORS_ORIGIN=$CORS_ORIGIN
+            POSTGRES_USER=$POSTGRES_USER
+            POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+            POSTGRES_DB=$POSTGRES_DB
+            SESSION_SECRET=$SESSION_SECRET
+            ENCRYPTION_KEY_CURRENT_VERSION=$ENCRYPTION_KEY_CURRENT_VERSION
+            ENCRYPTION_KEY_V1=$ENCRYPTION_KEY_V1
+            ENCRYPTION_KEYS_JSON=$ENCRYPTION_KEYS_JSON
+            VAPID_PUBLIC_KEY=$VAPID_PUBLIC_KEY
+            VAPID_PRIVATE_KEY=$VAPID_PRIVATE_KEY
+            VAPID_SUBJECT=$VAPID_SUBJECT
+            VITE_VAPID_PUBLIC_KEY=$VITE_VAPID_PUBLIC_KEY
+            EMAIL_PROVIDER=$EMAIL_PROVIDER
+            EMAIL_PROVIDER_API_KEY=$EMAIL_PROVIDER_API_KEY
+            EMAIL_FROM=$EMAIL_FROM
+            LLM_PROVIDER=$LLM_PROVIDER
+            LLM_API_KEY=$LLM_API_KEY
+            LLM_MODEL=$LLM_MODEL
+            LLM_MONTHLY_SPEND_LIMIT_USD=$LLM_MONTHLY_SPEND_LIMIT_USD
+            SENTRY_DSN=$SENTRY_DSN
+            VITE_SENTRY_DSN=$VITE_SENTRY_DSN
+            VITE_API_BASE_URL=$VITE_API_BASE_URL
+            EOF
+            chmod 600 .env
+
+            docker compose up -d db
+            ./deploy/backup.sh pre-migration
+            docker compose run --build --rm --no-deps api npm run db:migrate:prod --workspace=@firstwrite/api
+            docker compose up -d --build
+
+            curl --fail --silent --show-error --max-time 10 --retry 12 --retry-delay 5 --retry-connrefused "https://$APP_DOMAIN/api/health"
+            redirect_target=$(curl --silent --show-error --head --max-time 10 --output /dev/null --write-out '%{redirect_url}' "http://$APP_DOMAIN/api/health")
+            case "$redirect_target" in
+              https://*) ;;
+              *) printf '%s\n' 'Traefik HTTP-to-HTTPS redirect is missing or invalid.' >&2; exit 1 ;;
+            esac
+
+            docker image prune -f

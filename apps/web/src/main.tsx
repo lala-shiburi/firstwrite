@@ -1,7 +1,10 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './App.js';
+import { initializeMonitoring } from './monitoring.js';
 import './index.css';
+
+initializeMonitoring();
 
 function registerServiceWorkerWithPrompt() {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {

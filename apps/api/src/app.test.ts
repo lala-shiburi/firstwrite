@@ -218,6 +218,28 @@ describe('Express API bootstrap & security rules', () => {
     expect(rawLogs).not.toContain(secretPassword);
   });
 
+  it('does not log exception messages that could contain journal text', async () => {
+    const collector = createLogCollector();
+    const journalText = 'JOURNAL_TEXT_MUST_NOT_LEAK_FROM_EXCEPTION';
+    const app = createApp({
+      config: testConfig,
+      logger: collector.logger,
+      registerRoutes(expressApp) {
+        expressApp.get('/api/test-sensitive-error', () => {
+          throw new Error(journalText);
+        });
+      },
+    });
+
+    const response = await injectRequest(app, {
+      method: 'GET',
+      url: '/api/test-sensitive-error',
+    });
+
+    expect(response.status).toBe(500);
+    expect(collector.getOutput()).not.toContain(journalText);
+  });
+
   it('catches async errors in centralized error-handling middleware and formats Zod validation errors', async () => {
     const collector = createLogCollector();
     const app = createApp({
