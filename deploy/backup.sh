@@ -12,7 +12,7 @@ esac
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 compose_dir="${COMPOSE_DIR:-$(cd -- "$script_dir/.." && pwd)}"
-backup_config="${BACKUP_CONFIG:-/etc/morning-pages/backup.env}"
+backup_config="${BACKUP_CONFIG:-/etc/firstwrite/backup.env}"
 
 if [[ ! -r "$backup_config" ]]; then
   printf 'Backup configuration is missing or unreadable: %s\n' "$backup_config" >&2
@@ -32,7 +32,7 @@ trap 'rm -f -- "$temporary_backup"' EXIT
 send_failure_alert() {
   local exit_code=$?
   if (( exit_code != 0 )); then
-    printf '%s\n' "Morning Pages $backup_type backup failed on $(hostname -s) at $(date -u +%FT%TZ)." >&2
+    printf '%s\n' "First Write $backup_type backup failed on $(hostname -s) at $(date -u +%FT%TZ)." >&2
     curl --silent --show-error --fail \
       --data-urlencode "text=Morning Pages $backup_type backup failed on $(hostname -s) at $(date -u +%FT%TZ)." \
       "$ALERT_WEBHOOK_URL" >/dev/null 2>&1 || printf '%s\n' 'Backup failure alert delivery failed.' >&2
